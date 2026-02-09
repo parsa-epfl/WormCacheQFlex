@@ -1,8 +1,12 @@
-use std::sync::OnceLock;
+use std::sync::{
+    OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
 
 use crate::{parameter, qemu_api};
 use spin::mutex::SpinMutex;
 
+static PURE_FILL_CHECKPOINT_CREATED: AtomicBool = AtomicBool::new(false);
 static SNAPSHOT_INFO: SpinMutex<Option<(String, u64)>> = SpinMutex::new(None);
 
 unsafe extern "C" fn event_loop_callback() {
@@ -29,7 +33,7 @@ unsafe extern "C" fn event_loop_callback() {
             qemu_api::qemu_plugin_snapshot_format_t_QEMU_PLUGIN_SNAPSHOT_FORMAT_EXTERNAL_INCREMENTAL_BASE,
         );
 
-        std::process::exit(0);
+        PURE_FILL_CHECKPOINT_CREATED.store(true, Ordering::SeqCst);
     }
 }
 
@@ -37,6 +41,10 @@ static SNAPSHOT_NAME: OnceLock<String> = OnceLock::new();
 static WARM_RATIO: OnceLock<f64> = OnceLock::new();
 
 unsafe extern "C" fn quantum_checking_callback(_: u64) -> bool {
+    if PURE_FILL_CHECKPOINT_CREATED.load(std::sync::atomic::Ordering::SeqCst) {
+        return false;
+    }
+
     let warmed_set = unsafe { (*super::PLUGIN).get_scache_warmed_set_count() };
     let warm_ratio = *WARM_RATIO.get().unwrap();
 
