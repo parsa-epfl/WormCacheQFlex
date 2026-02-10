@@ -16,22 +16,24 @@ unsafe extern "C" fn event_loop_callback() {
             return;
         }
 
-        let mut snapshot_info_guard = snapshot_info_guard.unwrap();
+        // let mut snapshot_info_guard = snapshot_info_guard.unwrap();
 
-        if snapshot_info_guard.is_none() {
-            return;
-        }
+        // if snapshot_info_guard.is_none() {
+        //     return;
+        // }
 
-        let snapshot_info = snapshot_info_guard.take().unwrap();
+        // let snapshot_info = snapshot_info_guard.take().unwrap();
 
-        println!("Snapshot request: {}", &snapshot_info.0);
+        // println!("Snapshot request: {}", &snapshot_info.0);
 
-        let c_snapshot_name = std::ffi::CString::new(snapshot_info.0.clone()).unwrap();
+        // let c_snapshot_name = std::ffi::CString::new(snapshot_info.0.clone()).unwrap();
 
-        qemu_api::qemu_plugin_savevm(
-            c_snapshot_name.as_ptr(),
-            qemu_api::qemu_plugin_snapshot_format_t_QEMU_PLUGIN_SNAPSHOT_FORMAT_EXTERNAL_INCREMENTAL_BASE,
-        );
+        // qemu_api::qemu_plugin_savevm(
+        //     c_snapshot_name.as_ptr(),
+        //     qemu_api::qemu_plugin_snapshot_format_t_QEMU_PLUGIN_SNAPSHOT_FORMAT_EXTERNAL_INCREMENTAL_BASE,
+        // );
+        //
+        qemu_api::qemu_plugin_notify_fully_warmed();
 
         PURE_FILL_CHECKPOINT_CREATED.store(true, Ordering::SeqCst);
     }
