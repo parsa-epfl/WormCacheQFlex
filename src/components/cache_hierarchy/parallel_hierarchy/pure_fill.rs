@@ -16,13 +16,13 @@ unsafe extern "C" fn event_loop_callback() {
             return;
         }
 
-        // let mut snapshot_info_guard = snapshot_info_guard.unwrap();
+        let mut snapshot_info_guard = snapshot_info_guard.unwrap();
 
-        // if snapshot_info_guard.is_none() {
-        //     return;
-        // }
+        if snapshot_info_guard.is_none() {
+            return;
+        }
 
-        // let snapshot_info = snapshot_info_guard.take().unwrap();
+        let _ = snapshot_info_guard.take().unwrap();
 
         // println!("Snapshot request: {}", &snapshot_info.0);
 
