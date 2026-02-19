@@ -31,7 +31,9 @@
 
 pub mod fetch;
 
-use std::io::Write;
+use std::fs::File;
+use std::io::{LineWriter, Write};
+use std::sync::{Mutex, OnceLock};
 
 use super::Plugin;
 use crate::{parameter, qemu_api};
@@ -114,12 +116,21 @@ const ALLOCATED_CORE: usize = if parameter::MEASURE_HALF_OF_CORES {
 };
 
 static mut FETCH_UNIT: *mut fetch::FetchUnit<{ ALLOCATED_CORE }> = std::ptr::null_mut();
-static TAGE_DECISION_TRACE_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static TAGE_DECISION_TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
+static BRANCH_LOGS: OnceLock<Vec<Mutex<LineWriter<File>>>> = OnceLock::new();
 
 unsafe extern "C" fn branch_resolved_cb(vcpu_index: u32, pc: u64, target: u64, flags: u32) {
     unsafe {
         if parameter::MEASURE_HALF_OF_CORES && vcpu_index >= parameter::CORE_COUNT as u32 / 2 {
             return;
+        }
+
+        if let Some(logs) = BRANCH_LOGS.get() {
+            if let Some(log) = logs.get(vcpu_index as usize) {
+                if let Ok(mut log) = log.lock() {
+                    let _ = writeln!(log, "{}", pc);
+                }
+            }
         }
 
         let result = BranchResolutionResult::from_u32(flags);
@@ -169,6 +180,18 @@ impl Plugin for BranchPredictorPlugin {
                     "tage_decision_trace_limit",
                 ));
             }
+        }
+
+        if option_enabled(options, "branch_trace") {
+            let mut logs = Vec::with_capacity(ALLOCATED_CORE);
+            for core_id in 0..ALLOCATED_CORE {
+                let file = File::create(format!("branch_trace_core_{}.log", core_id))
+                    .expect("Failed to create branch trace log file.");
+                logs.push(Mutex::new(LineWriter::new(file)));
+            }
+            BRANCH_LOGS
+                .set(logs)
+                .expect("Failed to initialize branch trace logs.");
         }
     }
 
