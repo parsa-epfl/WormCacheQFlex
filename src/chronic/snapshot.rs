@@ -56,6 +56,7 @@ static mut PERIODIC_SNAPSHOT_NO_QEMU_SNAPSHOT: bool = false;
 
 static SNAPSHOT_PREFIX: OnceLock<String> = OnceLock::new();
 static QEMU_SNAPSHOT_FORMAT: OnceLock<SpinMutex<String>> = OnceLock::new();
+static GENERATE_GEM5_CHKPT: OnceLock<bool> = OnceLock::new();
 
 static SNAPSHOT_LATENCY: OnceLock<SpinMutex<Vec<u64>>> = OnceLock::new();
 
@@ -93,9 +94,11 @@ unsafe extern "C" fn event_loop_callback() {
             panic!("Unsupported snapshot format: {}", snapshot_format);
         };
 
+        let generate_gem5_chkpt = GENERATE_GEM5_CHKPT.get().copied().unwrap_or(false);
+
         // get the current timestamp in miliseconds
         let current_time = std::time::SystemTime::now();
-        qemu_api::qemu_plugin_savevm(c_snapshot_name.as_ptr(), snapshot_format);
+        qemu_api::qemu_plugin_savevm(c_snapshot_name.as_ptr(), snapshot_format, generate_gem5_chkpt);
         let elapsed_time = std::time::SystemTime::now()
             .duration_since(current_time)
             .unwrap()
@@ -226,6 +229,7 @@ pub unsafe fn init(
     prefix: String,
     init_index: u64,
     no_qemu_snapshot: bool,
+    generate_gem5_chkpt: bool,
 ) {
     unsafe {
         PERIODIC_SNAPSHOT_THRESHOLD = init_threshold;
@@ -234,6 +238,11 @@ pub unsafe fn init(
         SNAPSHOT_PREFIX.set(prefix).unwrap();
         PERIODIC_SNAPSHOT_INIT_INDEX = init_index;
         PERIODIC_SNAPSHOT_NO_QEMU_SNAPSHOT = no_qemu_snapshot;
+
+        // Set whether to generate gem5 checkpoints
+        GENERATE_GEM5_CHKPT
+            .set(generate_gem5_chkpt)
+            .expect("Failed to set gem5 checkpoint flag.");
 
         // make the default snapshot format to be incremental_first_base.
         QEMU_SNAPSHOT_FORMAT

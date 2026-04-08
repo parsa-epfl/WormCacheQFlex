@@ -43,6 +43,7 @@ pub fn chronic_behavior_init(options: &FxHashMap<String, String>) {
     // - count=N
     // - prefix="name"
     // - init_index=N
+    // - generate_gem5_chkpt=true|false
 
     if mode == "warm" || mode == "ff" {
         println!("Periodical snapshot (warm) is enabled.");
@@ -77,6 +78,11 @@ pub fn chronic_behavior_init(options: &FxHashMap<String, String>) {
             .map(|x| x.parse::<bool>().unwrap())
             .unwrap_or(false);
 
+        let generate_gem5_chkpt = options
+            .get("generate_gem5_chkpt")
+            .map(|x| x.parse::<bool>().unwrap())
+            .unwrap_or(false);
+
         unsafe {
             snapshot::init(
                 init_threshold,
@@ -85,6 +91,7 @@ pub fn chronic_behavior_init(options: &FxHashMap<String, String>) {
                 prefix,
                 init_index,
                 no_qemu_snapshot,
+                generate_gem5_chkpt,
             );
         }
     }

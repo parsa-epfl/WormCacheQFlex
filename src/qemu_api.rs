@@ -899,10 +899,11 @@ pub const qemu_plugin_snapshot_format_t_QEMU_PLUGIN_SNAPSHOT_FORMAT_EXTERNAL_INC
     qemu_plugin_snapshot_format_t = 5;
 pub type qemu_plugin_snapshot_format_t = ::std::os::raw::c_uint;
 unsafe extern "C" {
-    #[doc = " qemu_plugin_savevm - save the VM state.\n @name: the name of the snapshot.\n @use_xdelta: whether to use xdelta to save the snapshot.\n @xdelta_source_name: the name of the source snapshot when using xdelta. Can be null for other cases.\n\n This function is a wrapper of the QEMU function `save_snapshot`.\n It prints the error directly to the console."]
+    #[doc = " qemu_plugin_savevm - save the VM state.\n @name: the name of the snapshot.\n @format: the snapshot format to use.\n @generate_gem5_chkpt: whether to generate gem5-compatible checkpoint files (.raw + .register.info).\n\n This function is a wrapper of the QEMU function `save_snapshot`.\n It prints the error directly to the console."]
     pub fn qemu_plugin_savevm(
         name: *const ::std::os::raw::c_char,
         format: qemu_plugin_snapshot_format_t,
+        generate_gem5_chkpt: bool,
     );
 }
 pub type qemu_plugin_event_loop_poll_cb_t = ::std::option::Option<unsafe extern "C" fn()>;
