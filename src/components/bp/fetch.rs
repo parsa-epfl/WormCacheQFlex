@@ -67,9 +67,16 @@ impl PerCoreFetchUnit {
         }
     }
 
-    pub fn train(&mut self, pc: u64, result: BranchResolutionResult, target: u64, core_id: usize) {
+    pub fn train(
+        &mut self,
+        pc: u64,
+        result: BranchResolutionResult,
+        target: u64,
+        bbl_bytes: u64,
+        core_id: usize,
+    ) {
         let is_os = pc >> 63 == 1;
-        let btb_result = self.btb.train(pc, result, target);
+        let btb_result = self.btb.train(pc, result, target, bbl_bytes);
         let btb_miss = btb_result.0 == BranchPredictorResult::Mispredict;
 
         let tage_miss = if btb_result.1 == BranchType::Conditional {
@@ -143,8 +150,15 @@ impl<const CORE_COUNT: usize> FetchUnit<CORE_COUNT> {
         }
     }
 
-    pub fn train(&mut self, core_id: usize, pc: u64, result: BranchResolutionResult, target: u64) {
-        self.private_units[core_id].train(pc, result, target, core_id);
+    pub fn train(
+        &mut self,
+        core_id: usize,
+        pc: u64,
+        result: BranchResolutionResult,
+        target: u64,
+        bbl_bytes: u64,
+    ) {
+        self.private_units[core_id].train(pc, result, target, bbl_bytes, core_id);
     }
 
     pub fn set_tage_decision_trace_limit(&mut self, limit: Option<usize>) {

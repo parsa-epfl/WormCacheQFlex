@@ -31,6 +31,7 @@
 
 pub mod fetch;
 
+use core::ffi;
 use std::fs::File;
 use std::io::{LineWriter, Write};
 use std::sync::{Mutex, OnceLock};
@@ -119,6 +120,41 @@ static mut FETCH_UNIT: *mut fetch::FetchUnit<{ ALLOCATED_CORE }> = std::ptr::nul
 static TAGE_DECISION_TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
 static BRANCH_LOGS: OnceLock<Vec<Mutex<LineWriter<File>>>> = OnceLock::new();
 
+#[derive(Default, Debug, Clone, Copy)]
+struct CoreBbState {
+    current_bb_start: Option<u64>,
+    prev_pc: Option<u64>,
+    next_pc_starts_new_bb: bool,
+}
+
+static BB_STATES: OnceLock<Vec<Mutex<CoreBbState>>> = OnceLock::new();
+
+unsafe extern "C" fn vcpu_insn_exec(vcpu_idx: u32, inst_virtual_addr: *mut ffi::c_void) {
+    if parameter::MEASURE_HALF_OF_CORES && vcpu_idx >= parameter::CORE_COUNT as u32 / 2 {
+        return;
+    }
+
+    let pc_vpn = unsafe { qemu_api::qemu_plugin_read_pc_vpn() };
+    let pc = (pc_vpn << 12) | (inst_virtual_addr as u64 & 0xfff);
+
+    if let Some(states) = BB_STATES.get() {
+        if let Some(state) = states.get(vcpu_idx as usize) {
+            if let Ok(mut state) = state.lock() {
+                let starts_new_bb = state.current_bb_start.is_none()
+                    || state.next_pc_starts_new_bb
+                    || state.prev_pc.map_or(false, |prev_pc| prev_pc.saturating_add(4) != pc);
+
+                if starts_new_bb {
+                    state.current_bb_start = Some(pc);
+                    state.next_pc_starts_new_bb = false;
+                }
+
+                state.prev_pc = Some(pc);
+            }
+        }
+    }
+}
+
 unsafe extern "C" fn branch_resolved_cb(vcpu_index: u32, pc: u64, target: u64, flags: u32) {
     unsafe {
         if parameter::MEASURE_HALF_OF_CORES && vcpu_index >= parameter::CORE_COUNT as u32 / 2 {
@@ -134,7 +170,23 @@ unsafe extern "C" fn branch_resolved_cb(vcpu_index: u32, pc: u64, target: u64, f
         }
 
         let result = BranchResolutionResult::from_u32(flags);
-        (*FETCH_UNIT).train(vcpu_index as usize, pc, result, target)
+        let bbl_bytes = BB_STATES
+            .get()
+            .and_then(|states| states.get(vcpu_index as usize))
+            .and_then(|state| state.lock().ok().map(|state| state.current_bb_start))
+            .flatten()
+            .map(|bb_start| pc.saturating_sub(bb_start))
+            .unwrap_or(0);
+
+        if let Some(states) = BB_STATES.get() {
+            if let Some(state) = states.get(vcpu_index as usize) {
+                if let Ok(mut state) = state.lock() {
+                    state.next_pc_starts_new_bb = true;
+                }
+            }
+        }
+
+        (*FETCH_UNIT).train(vcpu_index as usize, pc, result, target, bbl_bytes)
     }
 }
 
@@ -181,6 +233,13 @@ impl Plugin for BranchPredictorPlugin {
                 ));
             }
         }
+        BB_STATES
+            .set(
+                (0..ALLOCATED_CORE)
+                    .map(|_| Mutex::new(CoreBbState::default()))
+                    .collect(),
+            )
+            .expect("Failed to initialize BTB basic-block tracking state.");
 
         if option_enabled(options, "branch_trace") {
             let mut logs = Vec::with_capacity(ALLOCATED_CORE);
@@ -195,8 +254,24 @@ impl Plugin for BranchPredictorPlugin {
         }
     }
 
-    unsafe fn on_translation(_: *mut crate::qemu_api::qemu_plugin_tb) {
-        // The callback is already inserted into the TB during init.
+    unsafe fn on_translation(tb: *mut crate::qemu_api::qemu_plugin_tb) {
+        let instruction_count = unsafe { qemu_api::qemu_plugin_tb_n_insns(tb) };
+        if instruction_count == 0 {
+            return;
+        }
+
+        for i in 0..instruction_count {
+            let insn = unsafe { qemu_api::qemu_plugin_tb_get_insn(tb, i) };
+            let insn_addr = unsafe { qemu_api::qemu_plugin_insn_vaddr(insn) };
+            unsafe {
+                qemu_api::qemu_plugin_register_vcpu_insn_exec_cb(
+                    insn,
+                    Some(vcpu_insn_exec),
+                    qemu_api::qemu_plugin_cb_flags_QEMU_PLUGIN_CB_NO_REGS,
+                    insn_addr as *mut ffi::c_void,
+                );
+            }
+        }
     }
 
     fn serialize(name: &str) {
