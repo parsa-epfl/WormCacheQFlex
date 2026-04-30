@@ -42,6 +42,8 @@ pub struct BTBEntry {
     pub target: u64,
     pub ts: u64, // zero means invalid.
     pub branch_type: BranchType,
+    #[serde(default)]
+    pub bbl_bytes: u64,
 }
 
 #[serde_as]
@@ -61,6 +63,7 @@ impl<const SET: usize, const ASSO: usize> BTB<SET, ASSO> {
                     target: 0,
                     ts: 0,
                     branch_type: BranchType::NonBranch,
+                    bbl_bytes: 0,
                 })
             })),
             local_ts: 0,
@@ -73,6 +76,7 @@ impl<const SET: usize, const ASSO: usize> BTB<SET, ASSO> {
         pc: u64,
         result: BranchResolutionResult,
         target: u64,
+        bbl_bytes: u64,
     ) -> (BranchPredictorResult, BranchType) {
         self.local_ts += 1;
 
@@ -84,6 +88,7 @@ impl<const SET: usize, const ASSO: usize> BTB<SET, ASSO> {
         for entry in self.array[index].iter_mut() {
             if entry.tag == pc {
                 entry.ts = self.local_ts;
+                entry.bbl_bytes = bbl_bytes;
                 // BTB is not trained or accessed when the branch is predicted to be not taken.
                 if !result.is_taken {
                     // This is useful to guide the TAGE training.
@@ -123,6 +128,7 @@ impl<const SET: usize, const ASSO: usize> BTB<SET, ASSO> {
             self.array[index][min_index].target = target;
             self.array[index][min_index].ts = self.local_ts;
             self.array[index][min_index].branch_type = result.branch_type;
+            self.array[index][min_index].bbl_bytes = bbl_bytes;
 
             return (BranchPredictorResult::Mispredict, result.branch_type);
         }
