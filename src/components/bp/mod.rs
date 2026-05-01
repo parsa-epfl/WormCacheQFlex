@@ -32,7 +32,6 @@
 pub mod fetch;
 
 use core::ffi;
-use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{LineWriter, Write};
 use std::sync::{Mutex, OnceLock};
@@ -119,10 +118,7 @@ const ALLOCATED_CORE: usize = if parameter::MEASURE_HALF_OF_CORES {
 
 static mut FETCH_UNIT: *mut fetch::FetchUnit<{ ALLOCATED_CORE }> = std::ptr::null_mut();
 static BRANCH_LOGS: OnceLock<Vec<Mutex<LineWriter<File>>>> = OnceLock::new();
-static DUMP_BBL_VARIANTS: OnceLock<bool> = OnceLock::new();
 static COLLECT_GEM5_BBL_BTB: OnceLock<bool> = OnceLock::new();
-static OBSERVED_BBL_VARIANTS: OnceLock<Vec<Mutex<FxHashMap<u64, FxHashMap<u64, u64>>>>> =
-    OnceLock::new();
 
 #[derive(Default, Debug, Clone, Copy)]
 struct CoreBbState {
@@ -182,17 +178,6 @@ unsafe extern "C" fn branch_resolved_cb(vcpu_index: u32, pc: u64, target: u64, f
             .map(|bb_start| pc.saturating_sub(bb_start))
             .unwrap_or(0);
 
-        if *DUMP_BBL_VARIANTS.get().unwrap_or(&false) {
-            if let Some(per_core) = OBSERVED_BBL_VARIANTS.get() {
-                if let Some(observed) = per_core.get(vcpu_index as usize) {
-                    if let Ok(mut observed) = observed.lock() {
-                        let branch_entry = observed.entry(pc).or_default();
-                        *branch_entry.entry(bbl_bytes).or_default() += 1;
-                    }
-                }
-            }
-        }
-
         if let Some(states) = BB_STATES.get() {
             if let Some(state) = states.get(vcpu_index as usize) {
                 if let Ok(mut state) = state.lock() {
@@ -245,16 +230,6 @@ impl Plugin for BranchPredictorPlugin {
                     .collect(),
             )
             .expect("Failed to initialize BTB basic-block tracking state.");
-        DUMP_BBL_VARIANTS
-            .set(option_enabled(options, "dump_bbl_variants"))
-            .expect("Failed to initialize BTB variant dump option.");
-        OBSERVED_BBL_VARIANTS
-            .set(
-                (0..ALLOCATED_CORE)
-                    .map(|_| Mutex::new(FxHashMap::default()))
-                    .collect(),
-            )
-            .expect("Failed to initialize observed BTB basic-block variants.");
 
         if option_enabled(options, "branch_trace") {
             let mut logs = Vec::with_capacity(ALLOCATED_CORE);
@@ -300,10 +275,6 @@ impl Plugin for BranchPredictorPlugin {
         file.write_all(json.as_bytes()).unwrap();
 
         file.finish().unwrap();
-
-        if *DUMP_BBL_VARIANTS.get().unwrap_or(&false) {
-            dump_bbl_variants(name);
-        }
     }
 
     fn deserialize(name: &str) {
@@ -329,47 +300,6 @@ impl Plugin for BranchPredictorPlugin {
         let collect_gem5_bbl_btb = *COLLECT_GEM5_BBL_BTB.get().unwrap_or(&false);
         unsafe {
             (*FETCH_UNIT).set_collect_gem5_bbl_btb(collect_gem5_bbl_btb);
-        }
-    }
-}
-
-fn dump_bbl_variants(name: &str) {
-    #[derive(Serialize)]
-    struct BranchBblVariantRecord {
-        branch_pc: u64,
-        unique_bbl_bytes_count: usize,
-        observed_bbl_bytes: BTreeMap<u64, u64>,
-    }
-
-    if let Some(per_core) = OBSERVED_BBL_VARIANTS.get() {
-        for (core_id, observed) in per_core.iter().enumerate() {
-            let Ok(observed) = observed.lock() else {
-                continue;
-            };
-
-            let mut branch_records = Vec::new();
-            for (&branch_pc, variants) in observed.iter() {
-                if variants.len() <= 1 {
-                    continue;
-                }
-
-                let observed_bbl_bytes = variants
-                    .iter()
-                    .map(|(&bbl_bytes, &count)| (bbl_bytes, count))
-                    .collect::<BTreeMap<_, _>>();
-                branch_records.push(BranchBblVariantRecord {
-                    branch_pc,
-                    unique_bbl_bytes_count: observed_bbl_bytes.len(),
-                    observed_bbl_bytes,
-                });
-            }
-
-            branch_records.sort_by_key(|record| record.branch_pc);
-
-            let path = format!("{}/branch_bbl_variants_core_{}.json", name, core_id);
-            let file = File::create(&path).expect("Failed to create branch BB variant dump file.");
-            serde_json::to_writer_pretty(file, &branch_records)
-                .expect("Failed to write branch BB variant dump.");
         }
     }
 }
