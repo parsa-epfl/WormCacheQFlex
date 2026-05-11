@@ -106,6 +106,18 @@ impl PerCoreFetchUnit {
         self.collect_gem5_bbl_btb = enabled;
     }
 
+    pub fn set_tage_decision_trace_limit(&mut self, limit: Option<usize>) {
+        self.tage.set_decision_trace_limit(limit);
+    }
+
+    pub fn predict_direction(&self, pc: u64, branch_type: BranchType) -> bool {
+        match branch_type {
+            BranchType::Conditional => self.tage.predict_direction(pc),
+            BranchType::NonBranch => false,
+            _ => true,
+        }
+    }
+
     pub fn train(
         &mut self,
         pc: u64,
@@ -195,6 +207,16 @@ impl<const CORE_COUNT: usize> FetchUnit<CORE_COUNT> {
         }
     }
 
+    pub fn set_tage_decision_trace_limit(&mut self, limit: Option<usize>) {
+        for unit in self.private_units.iter_mut() {
+            unit.set_tage_decision_trace_limit(limit);
+        }
+    }
+
+    pub fn predict_direction(&self, core_id: usize, pc: u64, branch_type: BranchType) -> bool {
+        self.private_units[core_id].predict_direction(pc, branch_type)
+    }
+
     pub fn train(
         &mut self,
         core_id: usize,
@@ -211,6 +233,16 @@ impl<const CORE_COUNT: usize> FetchUnit<CORE_COUNT> {
             let file_name = format!("{}/{}-bpred-training-history.json", folder_name, i);
             let file = std::fs::File::create(file_name).unwrap();
             serde_json::to_writer(file, &self.private_units[i].tage.training_trace).unwrap();
+        }
+    }
+
+    pub fn dump_tage_decision_trace(&self, folder_name: &str) {
+        for i in 0..CORE_COUNT {
+            let file_name = format!("{}/tage_decision_trace_core_{}.json.zst", folder_name, i);
+            let file = std::fs::File::create(file_name).unwrap();
+            let mut file = zstd::Encoder::new(file, 3).unwrap();
+            serde_json::to_writer(&mut file, &self.private_units[i].tage.decision_trace).unwrap();
+            file.finish().unwrap();
         }
     }
 }

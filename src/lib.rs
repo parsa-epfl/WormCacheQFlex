@@ -152,7 +152,10 @@ unsafe extern "C" fn loadvm_cb(name: *const ffi::c_char) {
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn qemu_plugin_exit(_: qemu_api::qemu_plugin_id_t, _: *mut ffi::c_void) {}
+unsafe extern "C" fn qemu_plugin_exit(_: qemu_api::qemu_plugin_id_t, _: *mut ffi::c_void) {
+    BranchPredictorPlugin::shutdown_logs();
+    BranchPredictorPlugin::dump_tage_decision_trace(".");
+}
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn qemu_plugin_install(

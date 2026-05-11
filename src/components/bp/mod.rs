@@ -66,6 +66,29 @@ impl BranchType {
     pub fn is_return(&self) -> bool {
         matches!(self, BranchType::Return)
     }
+
+    /// Compact branch-type code for branch trace export.
+    ///
+    /// The branch trace only logs resolved control-flow instructions, so this
+    /// mapping is independent from the serialized `BranchType` discriminant:
+    ///
+    /// 0 = Conditional
+    /// 1 = Unconditional direct branch
+    /// 2 = Direct call
+    /// 3 = Return
+    /// 4 = Indirect branch
+    /// 5 = Indirect call
+    pub fn trace_code(&self) -> u8 {
+        match self {
+            BranchType::Conditional => 0,
+            BranchType::Unconditional => 1,
+            BranchType::DirectCall => 2,
+            BranchType::Return => 3,
+            BranchType::IndirectBranch => 4,
+            BranchType::IndirectCall => 5,
+            BranchType::NonBranch => unreachable!("Non-branch entries are not emitted in branch traces"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -119,6 +142,7 @@ const ALLOCATED_CORE: usize = if parameter::MEASURE_HALF_OF_CORES {
 static mut FETCH_UNIT: *mut fetch::FetchUnit<{ ALLOCATED_CORE }> = std::ptr::null_mut();
 static BRANCH_LOGS: OnceLock<Vec<Mutex<LineWriter<File>>>> = OnceLock::new();
 static COLLECT_GEM5_BBL_BTB: OnceLock<bool> = OnceLock::new();
+static TAGE_DECISION_TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
 
 #[derive(Default, Debug, Clone, Copy)]
 struct CoreBbState {
@@ -161,15 +185,24 @@ unsafe extern "C" fn branch_resolved_cb(vcpu_index: u32, pc: u64, target: u64, f
             return;
         }
 
+        let result = BranchResolutionResult::from_u32(flags);
+        let predicted_direction =
+            (*FETCH_UNIT).predict_direction(vcpu_index as usize, pc, result.branch_type);
+
         if let Some(logs) = BRANCH_LOGS.get() {
             if let Some(log) = logs.get(vcpu_index as usize) {
                 if let Ok(mut log) = log.lock() {
-                    let _ = writeln!(log, "{}", pc);
+                    let _ = writeln!(
+                        &mut *log,
+                        "{:x},{},{},{}",
+                        pc,
+                        result.branch_type.trace_code(),
+                        if predicted_direction { 1 } else { 0 },
+                        if result.is_taken { 1 } else { 0 }
+                    );
                 }
             }
         }
-
-        let result = BranchResolutionResult::from_u32(flags);
         let bbl_bytes = BB_STATES
             .get()
             .and_then(|states| states.get(vcpu_index as usize))
@@ -199,6 +232,10 @@ fn option_enabled(options: &FxHashMap<String, String>, key: &str) -> bool {
     }
 }
 
+fn option_usize(options: &FxHashMap<String, String>, key: &str) -> Option<usize> {
+    options.get(key).and_then(|value| value.parse::<usize>().ok())
+}
+
 impl Plugin for BranchPredictorPlugin {
     fn init(_plugin_id: u64, options: &FxHashMap<String, String>) {
         println!("BranchPredictorPlugin initialized.");
@@ -220,8 +257,18 @@ impl Plugin for BranchPredictorPlugin {
         COLLECT_GEM5_BBL_BTB
             .set(collect_gem5_bbl_btb)
             .expect("Failed to initialize gem5 BBL-BTB collection option.");
+        let tage_decision_trace = option_enabled(options, "tage_decision_trace");
+        TAGE_DECISION_TRACE_ENABLED
+            .set(tage_decision_trace)
+            .expect("Failed to initialize TAGE decision trace option.");
         unsafe {
             FETCH_UNIT = Box::into_raw(Box::new(fetch::FetchUnit::new(collect_gem5_bbl_btb)));
+            if tage_decision_trace {
+                (*FETCH_UNIT).set_tage_decision_trace_limit(option_usize(
+                    options,
+                    "tage_decision_trace_limit",
+                ));
+            }
         }
         BB_STATES
             .set(
@@ -236,11 +283,17 @@ impl Plugin for BranchPredictorPlugin {
             for core_id in 0..ALLOCATED_CORE {
                 let file = File::create(format!("branch_trace_core_{}.log", core_id))
                     .expect("Failed to create branch trace log file.");
-                logs.push(Mutex::new(LineWriter::new(file)));
+                let mut writer = LineWriter::new(file);
+                writeln!(
+                    writer,
+                    "branch_pc,branch_type,predicted_direction,actual_direction"
+                )
+                .expect("Failed to write branch trace header.");
+                logs.push(Mutex::new(writer));
             }
-            BRANCH_LOGS
-                .set(logs)
-                .expect("Failed to initialize branch trace logs.");
+            if BRANCH_LOGS.set(logs).is_err() {
+                panic!("Failed to initialize branch trace logs.");
+            }
         }
     }
 
@@ -300,6 +353,30 @@ impl Plugin for BranchPredictorPlugin {
         let collect_gem5_bbl_btb = *COLLECT_GEM5_BBL_BTB.get().unwrap_or(&false);
         unsafe {
             (*FETCH_UNIT).set_collect_gem5_bbl_btb(collect_gem5_bbl_btb);
+        }
+    }
+}
+
+impl BranchPredictorPlugin {
+    pub fn shutdown_logs() {
+        if let Some(logs) = BRANCH_LOGS.get() {
+            for log in logs {
+                if let Ok(mut log) = log.lock() {
+                    log.flush().expect("Failed to flush branch trace log.");
+                }
+            }
+        }
+    }
+
+    pub fn dump_tage_decision_trace(folder_name: &str) {
+        if !*TAGE_DECISION_TRACE_ENABLED.get().unwrap_or(&false) {
+            return;
+        }
+
+        unsafe {
+            if !FETCH_UNIT.is_null() {
+                (*FETCH_UNIT).dump_tage_decision_trace(folder_name);
+            }
         }
     }
 }
