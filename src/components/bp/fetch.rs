@@ -117,6 +117,10 @@ impl PerCoreFetchUnit {
             }
         }
     }
+
+    pub fn set_tage_decision_trace_limit(&mut self, limit: Option<usize>) {
+        self.tage.set_decision_trace_limit(limit);
+    }
 }
 
 impl Default for PerCoreFetchUnit {
@@ -143,11 +147,27 @@ impl<const CORE_COUNT: usize> FetchUnit<CORE_COUNT> {
         self.private_units[core_id].train(pc, result, target, core_id);
     }
 
+    pub fn set_tage_decision_trace_limit(&mut self, limit: Option<usize>) {
+        for unit in self.private_units.iter_mut() {
+            unit.set_tage_decision_trace_limit(limit);
+        }
+    }
+
     pub fn dump_training_trace(&self, folder_name: &str) {
         for i in 0..CORE_COUNT {
             let file_name = format!("{}/{}-bpred-training-history.json", folder_name, i);
             let file = std::fs::File::create(file_name).unwrap();
             serde_json::to_writer(file, &self.private_units[i].tage.training_trace).unwrap();
+        }
+    }
+
+    pub fn dump_tage_decision_trace(&self, folder_name: &str) {
+        for i in 0..CORE_COUNT {
+            let file_name = format!("{}/tage_decision_trace_core_{}.json.zst", folder_name, i);
+            let file = std::fs::File::create(file_name).unwrap();
+            let mut file = zstd::Encoder::new(file, 3).unwrap();
+            serde_json::to_writer(&mut file, &self.private_units[i].tage.decision_trace).unwrap();
+            file.finish().unwrap();
         }
     }
 }

@@ -114,6 +114,7 @@ const ALLOCATED_CORE: usize = if parameter::MEASURE_HALF_OF_CORES {
 };
 
 static mut FETCH_UNIT: *mut fetch::FetchUnit<{ ALLOCATED_CORE }> = std::ptr::null_mut();
+static TAGE_DECISION_TRACE_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 unsafe extern "C" fn branch_resolved_cb(vcpu_index: u32, pc: u64, target: u64, flags: u32) {
     unsafe {
@@ -127,6 +128,17 @@ unsafe extern "C" fn branch_resolved_cb(vcpu_index: u32, pc: u64, target: u64, f
 }
 
 pub struct BranchPredictorPlugin {}
+
+fn option_enabled(options: &FxHashMap<String, String>, key: &str) -> bool {
+    matches!(
+        options.get(key).map(|v| v.as_str()),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    )
+}
+
+fn option_usize(options: &FxHashMap<String, String>, key: &str) -> Option<usize> {
+    options.get(key).and_then(|value| value.parse::<usize>().ok())
+}
 
 impl Plugin for BranchPredictorPlugin {
     fn init(_plugin_id: u64, options: &FxHashMap<String, String>) {
@@ -145,8 +157,18 @@ impl Plugin for BranchPredictorPlugin {
             qemu_api::qemu_plugin_register_vcpu_branch_resolved_cb(Some(branch_resolved_cb))
         });
 
+        let tage_decision_trace = option_enabled(options, "tage_decision_trace");
+        TAGE_DECISION_TRACE_ENABLED
+            .set(tage_decision_trace)
+            .expect("Failed to initialize TAGE decision trace option.");
         unsafe {
             FETCH_UNIT = Box::into_raw(Box::new(fetch::FetchUnit::new()));
+            if tage_decision_trace {
+                (*FETCH_UNIT).set_tage_decision_trace_limit(option_usize(
+                    options,
+                    "tage_decision_trace_limit",
+                ));
+            }
         }
     }
 
@@ -191,5 +213,19 @@ impl Plugin for BranchPredictorPlugin {
         let mut reader = serde_json::Deserializer::from_reader(reader);
 
         Deserialize::deserialize_in_place(&mut reader, unsafe { &mut (*FETCH_UNIT) }).unwrap();
+    }
+}
+
+impl BranchPredictorPlugin {
+    pub fn dump_tage_decision_trace(folder_name: &str) {
+        if !*TAGE_DECISION_TRACE_ENABLED.get().unwrap_or(&false) {
+            return;
+        }
+
+        unsafe {
+            if !FETCH_UNIT.is_null() {
+                (*FETCH_UNIT).dump_tage_decision_trace(folder_name);
+            }
+        }
     }
 }
