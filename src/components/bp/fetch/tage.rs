@@ -247,6 +247,8 @@ pub struct TAGEPredictor {
     #[serde(skip)]
     pub decision_trace: Vec<TAGEDecisionTrace>,
     #[serde(skip)]
+    pub decision_trace_enabled: bool,
+    #[serde(skip)]
     pub decision_trace_limit: Option<usize>,
     // Debugging training trace.
 }
@@ -325,11 +327,13 @@ impl TAGEPredictor {
 
             training_trace: vec![],
             decision_trace: vec![],
+            decision_trace_enabled: false,
             decision_trace_limit: None,
         }
     }
 
     pub fn set_decision_trace_limit(&mut self, limit: Option<usize>) {
+        self.decision_trace_enabled = true;
         self.decision_trace_limit = limit;
     }
 
@@ -339,6 +343,10 @@ impl TAGEPredictor {
         taken: bool,
         prediction_result: &TAGEPredictionResultWithBank,
     ) {
+        if !self.decision_trace_enabled {
+            return;
+        }
+
         if matches!(
             self.decision_trace_limit,
             Some(limit) if self.decision_trace.len() >= limit
