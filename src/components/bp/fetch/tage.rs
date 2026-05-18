@@ -577,6 +577,8 @@ impl TAGEPredictor {
             }
         }
 
+        self.record_decision_trace(pc, taken, &prediction_result);
+
         if allocation {
             assert!(prediction_result.result != taken);
             let mut min: i8 = 3; // the the minimum useful counter value
@@ -711,8 +713,6 @@ impl TAGEPredictor {
         //         std::array::from_fn(|idx| self.ch_t[1][idx].comp),
         //     ],
         // });
-
-        self.record_decision_trace(pc, taken, &prediction_result);
 
         // before returning, update the history.
 
