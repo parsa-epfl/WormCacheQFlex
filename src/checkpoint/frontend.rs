@@ -158,6 +158,7 @@ fn serialize_a_tage(
 
 #[derive(Serialize, Deserialize)]
 struct PerCoreFetchUnitProxy {
+    #[serde(alias = "pc_btb")]
     btb: BTBProxy,
     tage: tage::TAGEPredictor,
 }
