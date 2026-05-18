@@ -88,7 +88,9 @@ impl<const SET: usize, const ASSO: usize> BblBTB<SET, ASSO> {
                 entry.branch_pc = pc;
                 entry.branch_type = result.branch_type;
                 entry.bbl_bytes = bbl_bytes;
-                entry.target = target;
+                if result.is_taken {
+                    entry.target = target;
+                }
                 return;
             }
         }
