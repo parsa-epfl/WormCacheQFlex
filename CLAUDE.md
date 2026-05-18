@@ -105,6 +105,7 @@ These are read by Flexus via the parent's `checkpoint_conversion` binary, which 
 
 ## See also
 
+- [../CORE_CLOCKS.md](../CORE_CLOCKS.md) — how parallel-qemu's barrier and the per-core `quantum_size` / `check_period` machinery actually drive the `pf_periodic_check_cb` this plugin registers. WormCache is policy ("snapshot now?"); §6 calls out explicitly that WormCache is *not* part of the quantum mechanism. **Read this when debugging snapshot-firing or per-core vtime in checkpoints.** Surfaced as the `core-clocks` skill.
 - [../CLAUDE.md](../CLAUDE.md) — qflex root: four-phase pipeline, sampling vocabulary (population / sample / sampling unit), `ExperimentContext`.
 - [../parallel-qemu/CLAUDE.md](../parallel-qemu/CLAUDE.md) — the fast QEMU that loads this plugin via `-plugin` during phases 2–3.
 - [../flexus/CLAUDE.md](../flexus/CLAUDE.md) — the timing model that consumes the checkpoints this plugin emits.
