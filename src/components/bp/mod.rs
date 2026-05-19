@@ -333,6 +333,7 @@ impl Plugin for BranchPredictorPlugin {
         let tage_decision_trace_limit = *TAGE_DECISION_TRACE_LIMIT.get().unwrap_or(&None);
         reset_bb_states();
         unsafe {
+            (*FETCH_UNIT).clear_tage_debug_traces();
             (*FETCH_UNIT).set_collect_gem5_bbl_btb(collect_gem5_bbl_btb);
             if tage_decision_trace {
                 (*FETCH_UNIT).set_tage_decision_trace_limit(tage_decision_trace_limit);

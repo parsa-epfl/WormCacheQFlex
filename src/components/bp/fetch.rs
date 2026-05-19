@@ -179,6 +179,10 @@ impl PerCoreFetchUnit {
     pub fn set_tage_decision_trace_limit(&mut self, limit: Option<usize>) {
         self.tage.set_decision_trace_limit(limit);
     }
+
+    pub fn clear_tage_debug_traces(&mut self) {
+        self.tage.clear_debug_traces();
+    }
 }
 
 impl Default for PerCoreFetchUnit {
@@ -221,6 +225,12 @@ impl<const CORE_COUNT: usize> FetchUnit<CORE_COUNT> {
     pub fn set_tage_decision_trace_limit(&mut self, limit: Option<usize>) {
         for unit in self.private_units.iter_mut() {
             unit.set_tage_decision_trace_limit(limit);
+        }
+    }
+
+    pub fn clear_tage_debug_traces(&mut self) {
+        for unit in self.private_units.iter_mut() {
+            unit.clear_tage_debug_traces();
         }
     }
 

@@ -337,6 +337,11 @@ impl TAGEPredictor {
         self.decision_trace_limit = limit;
     }
 
+    pub fn clear_debug_traces(&mut self) {
+        self.training_trace.clear();
+        self.decision_trace.clear();
+    }
+
     fn record_decision_trace(
         &mut self,
         pc: Address,
