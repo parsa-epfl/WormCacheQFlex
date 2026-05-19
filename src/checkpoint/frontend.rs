@@ -1,8 +1,9 @@
 use crate::components::bp::fetch::{
+    bbl_btb,
     btb::BTBEntry,
     tage::{self, *},
 };
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -24,8 +25,30 @@ struct BTBProxy {
     array: Vec<Vec<BTBEntry>>,
 }
 
+fn bbl_bytes_by_pc(
+    restore_export: Option<RestoreExportProxy>,
+) -> FxHashMap<u64, u64> {
+    let mut out = FxHashMap::default();
+
+    let Some(restore_export) = restore_export else {
+        return out;
+    };
+
+    for set in restore_export.bbl_btb.array {
+        for entry in set {
+            if entry.ts == 0 {
+                continue;
+            }
+            out.insert(entry.branch_pc, entry.bbl_bytes);
+        }
+    }
+
+    out
+}
+
 fn serialize_a_btb(
     btb_proxy: BTBProxy,
+    bbl_bytes_by_pc: &FxHashMap<u64, u64>,
     flexus_configuration: &FlexusParameter,
 ) -> Vec<Vec<FlexusBTBEntry>> {
     assert!(btb_proxy.array.len() % flexus_configuration.btb_sets == 0);
@@ -82,7 +105,7 @@ fn serialize_a_btb(
                 target: entry.target,
                 type_: entry.branch_type as u64,
                 ts: entry.ts,
-                bbl_bytes: entry.bbl_bytes,
+                bbl_bytes: bbl_bytes_by_pc.get(&entry.tag).copied().unwrap_or(0),
             });
         }
         serialized_btb_json.push(serialized_set);
@@ -157,10 +180,17 @@ fn serialize_a_tage(
 }
 
 #[derive(Serialize, Deserialize)]
+struct RestoreExportProxy {
+    bbl_btb: bbl_btb::BblBTB<{ crate::parameter::BTB_SET }, { crate::parameter::BTB_ASSO }>,
+}
+
+#[derive(Serialize, Deserialize)]
 struct PerCoreFetchUnitProxy {
     #[serde(alias = "pc_btb")]
     btb: BTBProxy,
     tage: tage::TAGEPredictor,
+    #[serde(default)]
+    restore_export: Option<RestoreExportProxy>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -176,7 +206,11 @@ impl FlexusFetchUnit {
             serde_json::to_writer(
                 file,
                 &json!({
-                    "btb": serialize_a_btb(unit.btb, flexus_configuration),
+                    "btb": serialize_a_btb(
+                        unit.btb,
+                        &bbl_bytes_by_pc(unit.restore_export),
+                        flexus_configuration,
+                    ),
                     "tage": serialize_a_tage(unit.tage),
                 }),
             )

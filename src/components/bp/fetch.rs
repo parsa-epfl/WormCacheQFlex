@@ -120,7 +120,7 @@ impl PerCoreFetchUnit {
         core_id: usize,
     ) {
         let is_os = pc >> 63 == 1;
-        let pc_btb_result = self.pc_btb.train(pc, result, target, bbl_bytes);
+        let pc_btb_result = self.pc_btb.train(pc, result, target);
         if self.collect_gem5_bbl_btb {
             self.restore_export
                 .get_or_insert_with(RestoreExportState::default)

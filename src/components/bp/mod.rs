@@ -132,6 +132,9 @@ struct CoreBbState {
 static BB_STATES: OnceLock<Vec<Mutex<CoreBbState>>> = OnceLock::new();
 
 unsafe extern "C" fn vcpu_insn_exec(vcpu_idx: u32, inst_virtual_addr: *mut ffi::c_void) {
+    if !*COLLECT_GEM5_BBL_BTB.get().unwrap_or(&false) {
+        return;
+    }
     if parameter::MEASURE_HALF_OF_CORES && vcpu_idx >= parameter::CORE_COUNT as u32 / 2 {
         return;
     }
@@ -172,18 +175,25 @@ unsafe extern "C" fn branch_resolved_cb(vcpu_index: u32, pc: u64, target: u64, f
         }
 
         let result = BranchResolutionResult::from_u32(flags);
-        let bbl_bytes = BB_STATES
-            .get()
-            .and_then(|states| states.get(vcpu_index as usize))
-            .and_then(|state| state.lock().ok().map(|state| state.current_bb_start))
-            .flatten()
-            .map(|bb_start| pc.saturating_sub(bb_start))
-            .unwrap_or(0);
+        let collect_gem5_bbl_btb = *COLLECT_GEM5_BBL_BTB.get().unwrap_or(&false);
+        let bbl_bytes = if collect_gem5_bbl_btb {
+            BB_STATES
+                .get()
+                .and_then(|states| states.get(vcpu_index as usize))
+                .and_then(|state| state.lock().ok().map(|state| state.current_bb_start))
+                .flatten()
+                .map(|bb_start| pc.saturating_sub(bb_start))
+                .unwrap_or(0)
+        } else {
+            0
+        };
 
-        if let Some(states) = BB_STATES.get() {
-            if let Some(state) = states.get(vcpu_index as usize) {
-                if let Ok(mut state) = state.lock() {
-                    state.next_pc_starts_new_bb = true;
+        if collect_gem5_bbl_btb {
+            if let Some(states) = BB_STATES.get() {
+                if let Some(state) = states.get(vcpu_index as usize) {
+                    if let Ok(mut state) = state.lock() {
+                        state.next_pc_starts_new_bb = true;
+                    }
                 }
             }
         }
@@ -254,13 +264,15 @@ impl Plugin for BranchPredictorPlugin {
                 (*FETCH_UNIT).set_tage_decision_trace_limit(tage_decision_trace_limit);
             }
         }
-        BB_STATES
-            .set(
-                (0..ALLOCATED_CORE)
-                    .map(|_| Mutex::new(CoreBbState::default()))
-                    .collect(),
-            )
-            .expect("Failed to initialize BTB basic-block tracking state.");
+        if collect_gem5_bbl_btb {
+            BB_STATES
+                .set(
+                    (0..ALLOCATED_CORE)
+                        .map(|_| Mutex::new(CoreBbState::default()))
+                        .collect(),
+                )
+                .expect("Failed to initialize BTB basic-block tracking state.");
+        }
 
         if option_enabled(options, "branch_trace") {
             let mut logs = Vec::with_capacity(ALLOCATED_CORE);
@@ -281,16 +293,18 @@ impl Plugin for BranchPredictorPlugin {
             return;
         }
 
-        for i in 0..instruction_count {
-            let insn = unsafe { qemu_api::qemu_plugin_tb_get_insn(tb, i) };
-            let insn_addr = unsafe { qemu_api::qemu_plugin_insn_vaddr(insn) };
-            unsafe {
-                qemu_api::qemu_plugin_register_vcpu_insn_exec_cb(
-                    insn,
-                    Some(vcpu_insn_exec),
-                    qemu_api::qemu_plugin_cb_flags_QEMU_PLUGIN_CB_NO_REGS,
-                    insn_addr as *mut ffi::c_void,
-                );
+        if *COLLECT_GEM5_BBL_BTB.get().unwrap_or(&false) {
+            for i in 0..instruction_count {
+                let insn = unsafe { qemu_api::qemu_plugin_tb_get_insn(tb, i) };
+                let insn_addr = unsafe { qemu_api::qemu_plugin_insn_vaddr(insn) };
+                unsafe {
+                    qemu_api::qemu_plugin_register_vcpu_insn_exec_cb(
+                        insn,
+                        Some(vcpu_insn_exec),
+                        qemu_api::qemu_plugin_cb_flags_QEMU_PLUGIN_CB_NO_REGS,
+                        insn_addr as *mut ffi::c_void,
+                    );
+                }
             }
         }
     }
