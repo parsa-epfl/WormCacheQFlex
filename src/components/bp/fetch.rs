@@ -82,8 +82,8 @@ pub struct PerCoreFetchUnit {
     pc_btb: btb::BTB<{ parameter::BTB_SET }, { parameter::BTB_ASSO }>,
     ras: ras::ReturnAddressStacle<BP_RAS_COUNT>,
     tage: tage::TAGEPredictor,
-    #[serde(default)]
-    restore_export: RestoreExportState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    restore_export: Option<RestoreExportState>,
     #[serde(default, alias = "bbl_btb", skip_serializing)]
     legacy_bbl_btb: Option<bbl_btb::BblBTB<{ parameter::BTB_SET }, { parameter::BTB_ASSO }>>,
     #[serde(skip, default)]
@@ -96,7 +96,7 @@ impl PerCoreFetchUnit {
             pc_btb: btb::BTB::new(),
             ras: ras::ReturnAddressStacle::new(),
             tage: tage::TAGEPredictor::new(),
-            restore_export: RestoreExportState::default(),
+            restore_export: collect_gem5_bbl_btb.then(RestoreExportState::default),
             legacy_bbl_btb: None,
             collect_gem5_bbl_btb,
         }
@@ -104,6 +104,13 @@ impl PerCoreFetchUnit {
 
     pub fn set_collect_gem5_bbl_btb(&mut self, enabled: bool) {
         self.collect_gem5_bbl_btb = enabled;
+        if enabled {
+            if self.restore_export.is_none() {
+                self.restore_export = Some(RestoreExportState::default());
+            }
+        } else {
+            self.restore_export = None;
+        }
     }
 
     pub fn train(
@@ -118,6 +125,7 @@ impl PerCoreFetchUnit {
         let pc_btb_result = self.pc_btb.train(pc, result, target, bbl_bytes);
         if self.collect_gem5_bbl_btb {
             self.restore_export
+                .get_or_insert_with(RestoreExportState::default)
                 .record_basic_block(pc, result, target, bbl_bytes);
         }
         let btb_miss = pc_btb_result.0 == BranchPredictorResult::Mispredict;

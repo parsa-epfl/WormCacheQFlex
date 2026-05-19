@@ -118,6 +118,7 @@ const ALLOCATED_CORE: usize = if parameter::MEASURE_HALF_OF_CORES {
 
 static mut FETCH_UNIT: *mut fetch::FetchUnit<{ ALLOCATED_CORE }> = std::ptr::null_mut();
 static TAGE_DECISION_TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
+static TAGE_DECISION_TRACE_LIMIT: OnceLock<Option<usize>> = OnceLock::new();
 static BRANCH_LOGS: OnceLock<Vec<Mutex<LineWriter<File>>>> = OnceLock::new();
 static COLLECT_GEM5_BBL_BTB: OnceLock<bool> = OnceLock::new();
 
@@ -201,7 +202,21 @@ fn option_enabled(options: &FxHashMap<String, String>, key: &str) -> bool {
 }
 
 fn option_usize(options: &FxHashMap<String, String>, key: &str) -> Option<usize> {
-    options.get(key).and_then(|value| value.parse::<usize>().ok())
+    options.get(key).map(|value| {
+        value
+            .parse::<usize>()
+            .unwrap_or_else(|_| panic!("Invalid {} value: {}", key, value))
+    })
+}
+
+fn reset_bb_states() {
+    if let Some(states) = BB_STATES.get() {
+        for state in states.iter() {
+            if let Ok(mut state) = state.lock() {
+                *state = CoreBbState::default();
+            }
+        }
+    }
 }
 
 impl Plugin for BranchPredictorPlugin {
@@ -229,13 +244,14 @@ impl Plugin for BranchPredictorPlugin {
         COLLECT_GEM5_BBL_BTB
             .set(collect_gem5_bbl_btb)
             .expect("Failed to initialize gem5 BBL-BTB collection option.");
+        let tage_decision_trace_limit = option_usize(options, "tage_decision_trace_limit");
+        TAGE_DECISION_TRACE_LIMIT
+            .set(tage_decision_trace_limit)
+            .expect("Failed to initialize TAGE decision trace limit option.");
         unsafe {
             FETCH_UNIT = Box::into_raw(Box::new(fetch::FetchUnit::new(collect_gem5_bbl_btb)));
             if tage_decision_trace {
-                (*FETCH_UNIT).set_tage_decision_trace_limit(option_usize(
-                    options,
-                    "tage_decision_trace_limit",
-                ));
+                (*FETCH_UNIT).set_tage_decision_trace_limit(tage_decision_trace_limit);
             }
         }
         BB_STATES
@@ -313,8 +329,14 @@ impl Plugin for BranchPredictorPlugin {
 
         Deserialize::deserialize_in_place(&mut reader, unsafe { &mut (*FETCH_UNIT) }).unwrap();
         let collect_gem5_bbl_btb = *COLLECT_GEM5_BBL_BTB.get().unwrap_or(&false);
+        let tage_decision_trace = *TAGE_DECISION_TRACE_ENABLED.get().unwrap_or(&false);
+        let tage_decision_trace_limit = *TAGE_DECISION_TRACE_LIMIT.get().unwrap_or(&None);
+        reset_bb_states();
         unsafe {
             (*FETCH_UNIT).set_collect_gem5_bbl_btb(collect_gem5_bbl_btb);
+            if tage_decision_trace {
+                (*FETCH_UNIT).set_tage_decision_trace_limit(tage_decision_trace_limit);
+            }
         }
     }
 }
