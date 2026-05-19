@@ -350,7 +350,12 @@ impl BranchPredictorPlugin {
 
         unsafe {
             if !FETCH_UNIT.is_null() {
-                (*FETCH_UNIT).dump_tage_decision_trace(folder_name);
+                if let Err(err) = (*FETCH_UNIT).dump_tage_decision_trace(folder_name) {
+                    eprintln!(
+                        "Failed to dump TAGE decision trace under {}: {}",
+                        folder_name, err
+                    );
+                }
             }
         }
     }

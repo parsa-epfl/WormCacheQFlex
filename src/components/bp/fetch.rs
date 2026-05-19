@@ -38,6 +38,7 @@ pub mod tage;
 
 use crate::debug::statistics::{EventType, Statistics};
 use serde::{Deserialize, Serialize};
+use std::io::{self};
 use serde_with::serde_as;
 
 use crate::parameter::{self, BP_RAS_COUNT};
@@ -242,14 +243,18 @@ impl<const CORE_COUNT: usize> FetchUnit<CORE_COUNT> {
         }
     }
 
-    pub fn dump_tage_decision_trace(&self, folder_name: &str) {
+    pub fn dump_tage_decision_trace(&self, folder_name: &str) -> Result<(), io::Error> {
         for i in 0..CORE_COUNT {
             let file_name = format!("{}/tage_decision_trace_core_{}.json.zst", folder_name, i);
-            let file = std::fs::File::create(file_name).unwrap();
-            let mut file = zstd::Encoder::new(file, 3).unwrap();
-            serde_json::to_writer(&mut file, &self.private_units[i].tage.decision_trace).unwrap();
-            file.finish().unwrap();
+            let file = std::fs::File::create(&file_name)?;
+            let mut file = zstd::Encoder::new(file, 3)
+                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            serde_json::to_writer(&mut file, &self.private_units[i].tage.decision_trace)
+                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            file.finish()
+                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
         }
+        Ok(())
     }
 }
 
