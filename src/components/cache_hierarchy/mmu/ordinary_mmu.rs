@@ -1,13 +1,12 @@
 use rustc_hash::FxHashMap as HashMap;
 use serde::{Deserialize, Serialize};
 
+use crate::arch::MiscRegs;
 use crate::debug::statistics::{EventType, Statistics};
 use crate::{arch, parameter};
 
-use super::{
-    AbstractMMU, MMUFlushMode, MMUTranslationResult,
-    tlb::{self, AddressSpaceID, TLB},
-};
+use super::{AbstractMMU, MMUFlushMode, MMUTranslationResult};
+use super::tlb::{self, AddressSpaceID, TLB};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[repr(align(64))]
@@ -50,17 +49,18 @@ impl<
         ppn: u64,
         ts: u64,
         is_instruction: bool,
+        misc_regs: MiscRegs,
     ) {
         if parameter::L1TLB_ENABLED {
             if is_instruction {
-                self.itlb.insert(vpn, asid, ppn, ts, is_instruction);
+                self.itlb.insert(vpn, asid, ppn, ts, is_instruction, misc_regs.clone());
             } else {
-                self.dtlb.insert(vpn, asid, ppn, ts, is_instruction);
+                self.dtlb.insert(vpn, asid, ppn, ts, is_instruction, misc_regs.clone());
             }
         }
 
         if S_ENABLED {
-            self.stlb.insert(vpn, asid, ppn, ts, is_instruction);
+            self.stlb.insert(vpn, asid, ppn, ts, is_instruction, misc_regs);
         }
     }
 }
@@ -118,6 +118,8 @@ impl<
         let vpn = va >> 12;
         let asid = tlb::AddressSpaceID::NonGlobal(ARCH::get_asid()); // We will start with a non-global ASID. It can still match the global ASID.
 
+        let misc_regs = ARCH::get_misc_regs();
+
         let is_kernel = (vpn >> 51) == 1;
 
         Statistics::global_record(core_id, EventType::TLBAccess, is_kernel);
@@ -163,9 +165,9 @@ impl<
                 if parameter::L1TLB_ENABLED {
                     // Insert the result into L1 TLB.
                     if is_instruction {
-                        self.itlb.insert(vpn, asid, ppn, ts, is_instruction);
+                        self.itlb.insert(vpn, asid, ppn, ts, is_instruction, misc_regs);
                     } else {
-                        self.dtlb.insert(vpn, asid, ppn, ts, is_instruction);
+                        self.dtlb.insert(vpn, asid, ppn, ts, is_instruction, misc_regs);
                     }
                 }
 
@@ -257,7 +259,7 @@ impl<
             // based on the ptw_result, we refill each TLB correspondingly.
             match ptw_result.page_size {
                 arch::PageSize::_4KB => {
-                    self.refill_4k_tlb(vpn, asid, ptw_result.paddr >> 12, ts, is_instruction);
+                    self.refill_4k_tlb(vpn, asid, ptw_result.paddr >> 12, ts, is_instruction, misc_regs);
                 }
                 arch::PageSize::_2MB => {
                     self.htbl_2mb
@@ -296,7 +298,7 @@ impl<
             }
 
             // based on the ptw_result, we refill each TLB correspondingly.
-            self.refill_4k_tlb(vpn, asid, ptw_result.paddr >> 12, ts, is_instruction);
+            self.refill_4k_tlb(vpn, asid, ptw_result.paddr >> 12, ts, is_instruction, misc_regs);
 
             if ptw_result.cacheable {
                 MMUTranslationResult::Miss(ptw_result.paddr, ptw_result.traces)

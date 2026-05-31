@@ -29,7 +29,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use zstd::{Decoder, Encoder};
+
 
 use crate::components::cache_hierarchy::common::SharedCacheAccessSource;
 use crate::components::cache_hierarchy::mmu::AbstractMMU;
@@ -234,9 +234,8 @@ impl<
     }
 
     fn serialize_mmus(&self, name: &str, numa_node_id: usize) {
-        let file =
-            std::fs::File::create(format!("{}/mmus-{}.json.zstd", name, numa_node_id)).unwrap();
-        let mut file = Encoder::new(file, 0).unwrap();
+        let mut file =
+            std::fs::File::create(format!("{}/mmus-{}.json", name, numa_node_id)).unwrap();
 
         let multiple_mmus = self
             .mmus
@@ -245,12 +244,10 @@ impl<
             .collect::<Vec<_>>();
 
         serde_json::to_writer(&mut file, &serde_json::Value::Array(multiple_mmus)).unwrap();
-
-        file.finish().unwrap();
     }
 
     fn deserialize_mmus(&self, name: &str, numa_node_id: usize) {
-        let file = std::fs::File::open(format!("{}/mmus-{}.json.zstd", name, numa_node_id));
+        let file = std::fs::File::open(format!("{}/mmus-{}.json", name, numa_node_id));
 
         if file.is_err() {
             println!("Cannot load the MMU state. Error: {:?}", file.err());
@@ -259,9 +256,7 @@ impl<
 
         let file = file.unwrap();
 
-        let mut file = Decoder::new(file).unwrap();
-
-        let multiple_mmus: serde_json::Value = serde_json::from_reader(&mut file).unwrap();
+        let multiple_mmus: serde_json::Value = serde_json::from_reader(file).unwrap();
 
         match multiple_mmus {
             serde_json::Value::Array(mmus) => {

@@ -841,6 +841,18 @@ unsafe extern "C" {
     pub fn qemu_plugin_read_tcr_el1() -> u64;
 }
 unsafe extern "C" {
+    #[doc = " qemu_plugin_read_sctlr_el1 - returns the value of sctlr_el1.\n\n This function can be only called from threads that run a vCPU. Otherwise, it\n will trigger assertion failure."]
+    pub fn qemu_plugin_read_sctlr_el1() -> u64;
+}
+unsafe extern "C" {
+    #[doc = " qemu_plugin_read_cpsr - returns the value of CPSR (Current Program Status Register).\n\n This function can be only called from threads that run a vCPU. Otherwise, it\n will trigger assertion failure."]
+    pub fn qemu_plugin_read_cpsr() -> u64;
+}
+unsafe extern "C" {
+    #[doc = " qemu_plugin_read_mair_el1 - returns the value of mair_el1.\n\n This function can be only called from threads that run a vCPU. Otherwise, it\n will trigger assertion failure."]
+    pub fn qemu_plugin_read_mair_el1() -> u64;
+}
+unsafe extern "C" {
     #[doc = " qemu_plugin_hwaddr_translate_walk_trace - returns the trace of walking the\n page table to get the specific translation.\n\n The returned array has 4 elements. Every element is the hardware address of a\n specific page table entry. For huge pages or translation error, you will see\n -1 in the array ahead of time.\n\n This function can be only called from threads that run a vCPU. Otherwise, it\n will return NULL.\n\n The function reads the recorded trace in the TLB entry. There is a better way\n to optimize the storage.\n"]
     pub fn qemu_plugin_hwaddr_translate_walk_trace(hwaddr: *const qemu_plugin_hwaddr)
     -> *const u64;

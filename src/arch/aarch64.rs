@@ -35,9 +35,20 @@
 
 use std::ffi::c_void;
 
+use serde::{Deserialize, Serialize};
 use crate::{arch::PageSize, qemu_api};
 
 use super::{ISA, TranslationResult};
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct MiscRegs {
+    pub cpsr: u64,
+    pub sctlr_el1: u64,
+    pub tcr_el1: u64,
+    pub ttbr0_el1: u64,
+    pub ttbr1_el1: u64,
+    pub mair_el1: u64,
+}
 
 #[derive(Debug)]
 pub struct AArch64;
@@ -64,6 +75,17 @@ impl ISA for AArch64 {
         // I have to read the two granules.
         let which_ttbr_for_asid = if tcr >> 22 & 0b1 == 1 { 1 } else { 0 };
         unsafe { (qemu_api::qemu_plugin_read_ttbr_el1(which_ttbr_for_asid) >> 48) as u16 }
+    }
+
+    fn get_misc_regs() -> MiscRegs {
+        MiscRegs {
+            cpsr: unsafe { qemu_api::qemu_plugin_read_cpsr() },
+            sctlr_el1: unsafe { qemu_api::qemu_plugin_read_sctlr_el1() },
+            tcr_el1: unsafe { qemu_api::qemu_plugin_read_tcr_el1() },
+            ttbr0_el1: unsafe { qemu_api::qemu_plugin_read_ttbr_el1(0) },
+            ttbr1_el1: unsafe { qemu_api::qemu_plugin_read_ttbr_el1(1) },
+            mair_el1: unsafe { qemu_api::qemu_plugin_read_mair_el1() },
+        }
     }
 
     fn ptw(va: u64) -> TranslationResult {

@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::collections::VecDeque;
 
+use crate::arch::MiscRegs;
 use super::MMUFlushMode;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy, Eq, Hash)]
@@ -63,6 +64,8 @@ pub struct TLBEntry {
     pub vpn: u64,
     pub ppn: u64,
     pub is_instruction: bool,
+    #[serde(default)]
+    pub misc_regs: MiscRegs,
 }
 
 #[serde_as]
@@ -83,6 +86,7 @@ impl<const ASSO: usize> TLBSet<ASSO> {
                 vpn: 0,
                 ppn: 0,
                 is_instruction: false,
+                misc_regs: MiscRegs::default(),
             }),
             current_pointer: 0,
         }
@@ -119,6 +123,7 @@ impl<const ASSO: usize> TLBSet<ASSO> {
         ppn: u64,
         ts: u64,
         is_instruction: bool,
+        misc_regs: MiscRegs,
     ) {
         if self.current_pointer < ASSO {
             self.entries[self.current_pointer].valid = true;
@@ -127,6 +132,7 @@ impl<const ASSO: usize> TLBSet<ASSO> {
             self.entries[self.current_pointer].vpn = vpn;
             self.entries[self.current_pointer].ppn = ppn;
             self.entries[self.current_pointer].is_instruction = is_instruction;
+            self.entries[self.current_pointer].misc_regs = misc_regs;
             self.current_pointer += 1;
         } else {
             // find a victim.
@@ -142,6 +148,7 @@ impl<const ASSO: usize> TLBSet<ASSO> {
             self.entries[victim_idx].vpn = vpn;
             self.entries[victim_idx].ppn = ppn;
             self.entries[victim_idx].is_instruction = is_instruction;
+            self.entries[victim_idx].misc_regs = misc_regs;
         }
     }
 }
@@ -188,10 +195,11 @@ impl<const SET_COUNT: usize, const ASSO: usize> TLB<SET_COUNT, ASSO> {
         ppn: u64,
         ts: u64,
         is_instruction: bool,
+        misc_regs: MiscRegs,
     ) {
         let set_index = vpn % SET_COUNT as u64;
         let set = &mut self.entries[set_index as usize];
-        set.insert(vpn, asid, ppn, ts, is_instruction);
+        set.insert(vpn, asid, ppn, ts, is_instruction, misc_regs);
     }
 
     pub fn flush(&mut self, mode: MMUFlushMode) {
