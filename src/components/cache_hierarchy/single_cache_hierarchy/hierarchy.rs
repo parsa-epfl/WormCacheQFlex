@@ -71,7 +71,7 @@ impl<MMU: AbstractMMU> SingleCacheHierarchy<MMU> {
     fn serialize_mmus(&self, name: &str, numa_node_id: usize) {
         let file =
             std::fs::File::create(format!("{}/mmus-{}.json.zstd", name, numa_node_id)).unwrap();
-        let mut encoder = Encoder::new(file, 0).unwrap();
+        let mut file = Encoder::new(file, 0).unwrap();
 
         let multiple_mmus = self
             .mmus

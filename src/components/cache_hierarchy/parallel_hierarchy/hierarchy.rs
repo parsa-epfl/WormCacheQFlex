@@ -29,7 +29,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-uze zstd::{Decoder, Encoder};
+use zstd::{Decoder, Encoder};
 
 use crate::components::cache_hierarchy::common::SharedCacheAccessSource;
 use crate::components::cache_hierarchy::mmu::AbstractMMU;
