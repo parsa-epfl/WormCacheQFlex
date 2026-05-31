@@ -31,7 +31,7 @@
 
 use std::cell::UnsafeCell;
 
-
+use zstd::{Decoder, Encoder};
 
 use crate::{
     arch::AArch64,
@@ -69,8 +69,9 @@ impl<MMU: AbstractMMU> SingleCacheHierarchy<MMU> {
     }
 
     fn serialize_mmus(&self, name: &str, numa_node_id: usize) {
-        let mut file =
-            std::fs::File::create(format!("{}/mmus-{}.json", name, numa_node_id)).unwrap();
+        let file =
+            std::fs::File::create(format!("{}/mmus-{}.json.zstd", name, numa_node_id)).unwrap();
+        let mut encoder = Encoder::new(file, 0).unwrap();
 
         let multiple_mmus = self
             .mmus
@@ -79,10 +80,11 @@ impl<MMU: AbstractMMU> SingleCacheHierarchy<MMU> {
             .collect::<Vec<_>>();
 
         serde_json::to_writer(&mut file, &serde_json::Value::Array(multiple_mmus)).unwrap();
+        file.finish().unwrap();
     }
 
     fn deserialize_mmus(&self, name: &str, numa_node_id: usize) {
-        let file = std::fs::File::open(format!("{}/mmus-{}.json", name, numa_node_id));
+        let file = std::fs::File::open(format!("{}/mmus-{}.json.zstd", name, numa_node_id));
 
         if file.is_err() {
             println!("Cannot load the MMU state. Error: {:?}", file.err());
@@ -90,8 +92,9 @@ impl<MMU: AbstractMMU> SingleCacheHierarchy<MMU> {
         }
 
         let file = file.unwrap();
+        let mut file = Decoder::new(file).unwrap();
 
-        let multiple_mmus: serde_json::Value = serde_json::from_reader(file).unwrap();
+        let multiple_mmus: serde_json::Value = serde_json::from_reader(&mut file).unwrap();
 
         match multiple_mmus {
             serde_json::Value::Array(mmus) => {
