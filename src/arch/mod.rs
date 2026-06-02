@@ -31,6 +31,8 @@
 
 pub mod aarch64;
 
+pub type MiscRegs = aarch64::MiscRegs;
+
 pub enum PageSize {
     _4KB,
     _2MB,
@@ -49,6 +51,7 @@ pub struct TranslationResult {
 pub trait ISA {
     fn get_asid() -> u16;
     fn ptw(va: u64) -> TranslationResult;
+    fn get_misc_regs() -> MiscRegs;
     fn translate_in_pt(va: u64) -> u64 {
         (Self::ptw(va).paddr >> 12) << 12 | (va & 0xfff)
     }

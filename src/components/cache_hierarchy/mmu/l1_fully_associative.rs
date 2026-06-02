@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::arch::MiscRegs;
 use crate::{arch, parameter};
 
 use rustc_hash::FxHashMap as HashMap;
@@ -44,8 +45,9 @@ impl<
         ppn: u64,
         ts: u64,
         is_instruction: bool,
+        misc_regs: MiscRegs,
     ) {
-        self.stlb.insert(vpn, asid, ppn, ts, is_instruction);
+        self.stlb.insert(vpn, asid, ppn, ts, is_instruction, misc_regs);
 
         if parameter::L1TLB_ENABLED {
             if is_instruction {
@@ -87,6 +89,7 @@ impl<
     ) -> MMUTranslationResult {
         let vpn = va >> 12;
         let raw_asid = ARCH::get_asid();
+        let misc_regs = ARCH::get_misc_regs();
 
         let trial_asid = tlb::AddressSpaceID::NonGlobal(raw_asid); // We will start with a non-global ASID. It can still match the global ASID.
 
@@ -168,7 +171,7 @@ impl<
 
         if ptw_result.cacheable {
             // based on the ptw_result, we refill each TLB correspondingly.
-            self.refill_4k_tlb(vpn, asid, ptw_result.paddr >> 12, ts, is_instruction);
+            self.refill_4k_tlb(vpn, asid, ptw_result.paddr >> 12, ts, is_instruction, misc_regs);
             if is_instruction {
                 self.l0_itlb = (vpn, trial_asid, ptw_result.paddr >> 12);
             }
