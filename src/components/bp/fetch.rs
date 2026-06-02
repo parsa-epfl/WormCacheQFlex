@@ -30,6 +30,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 mod bimodal;
+pub mod bbl_btb;
 pub mod btb;
 mod gshare;
 mod ras;
@@ -50,29 +51,90 @@ pub enum BranchPredictorResult {
     NotActive,
 }
 
+/// Export-only state used by QPoints/gem5 checkpoint conversion.
+///
+/// This structure is recorded from the dynamic branch stream, but it is NOT
+/// consulted by WormCache/Flexus prediction. Live prediction remains driven by
+/// `pc_btb + tage + ras`.
+#[derive(Serialize, Deserialize, Default)]
+pub struct RestoreExportState {
+    #[serde(default)]
+    pub bbl_btb: bbl_btb::BblBTB<{ parameter::BTB_SET }, { parameter::BTB_ASSO }>,
+}
+
+impl RestoreExportState {
+    pub fn record_basic_block(
+        &mut self,
+        pc: u64,
+        result: BranchResolutionResult,
+        target: u64,
+        bbl_bytes: u64,
+    ) {
+        self.bbl_btb
+            .record_basic_block(pc, result, target, bbl_bytes);
+    }
+}
+
 #[repr(align(64))]
 #[derive(Serialize, Deserialize)]
 pub struct PerCoreFetchUnit {
-    btb: btb::BTB<{ parameter::BTB_SET }, { parameter::BTB_ASSO }>,
+    #[serde(default, alias = "btb")]
+    pc_btb: btb::BTB<{ parameter::BTB_SET }, { parameter::BTB_ASSO }>,
     ras: ras::ReturnAddressStacle<BP_RAS_COUNT>,
     tage: tage::TAGEPredictor,
+    #[serde(default)]
+    restore_export: RestoreExportState,
+    #[serde(default, alias = "bbl_btb", skip_serializing)]
+    legacy_bbl_btb: Option<bbl_btb::BblBTB<{ parameter::BTB_SET }, { parameter::BTB_ASSO }>>,
+    #[serde(skip, default)]
+    collect_gem5_bbl_btb: bool,
 }
 
 impl PerCoreFetchUnit {
-    pub fn new() -> PerCoreFetchUnit {
+    pub fn new(collect_gem5_bbl_btb: bool) -> PerCoreFetchUnit {
         PerCoreFetchUnit {
-            btb: btb::BTB::new(),
+            pc_btb: btb::BTB::new(),
             ras: ras::ReturnAddressStacle::new(),
             tage: tage::TAGEPredictor::new(),
+            restore_export: RestoreExportState::default(),
+            legacy_bbl_btb: None,
+            collect_gem5_bbl_btb,
         }
     }
 
-    pub fn train(&mut self, pc: u64, result: BranchResolutionResult, target: u64, core_id: usize) {
-        let is_os = pc >> 63 == 1;
-        let btb_result = self.btb.train(pc, result, target);
-        let btb_miss = btb_result.0 == BranchPredictorResult::Mispredict;
+    pub fn set_collect_gem5_bbl_btb(&mut self, enabled: bool) {
+        self.collect_gem5_bbl_btb = enabled;
+    }
 
-        let tage_miss = if btb_result.1 == BranchType::Conditional {
+    pub fn set_tage_decision_trace_limit(&mut self, limit: Option<usize>) {
+        self.tage.set_decision_trace_limit(limit);
+    }
+
+    pub fn predict_direction(&self, pc: u64, branch_type: BranchType) -> bool {
+        match branch_type {
+            BranchType::Conditional => self.tage.predict_direction(pc),
+            BranchType::NonBranch => false,
+            _ => true,
+        }
+    }
+
+    pub fn train(
+        &mut self,
+        pc: u64,
+        result: BranchResolutionResult,
+        target: u64,
+        bbl_bytes: u64,
+        core_id: usize,
+    ) {
+        let is_os = pc >> 63 == 1;
+        let pc_btb_result = self.pc_btb.train(pc, result, target, bbl_bytes);
+        if self.collect_gem5_bbl_btb {
+            self.restore_export
+                .record_basic_block(pc, result, target, bbl_bytes);
+        }
+        let btb_miss = pc_btb_result.0 == BranchPredictorResult::Mispredict;
+
+        let tage_miss = if pc_btb_result.1 == BranchType::Conditional {
             self.tage.train(pc, result, target) == BranchPredictorResult::Mispredict
         } else if result.branch_type != BranchType::NonBranch {
             self.tage.update_history(pc, result.is_taken); // This has to be done for non-conditional branches.
@@ -121,7 +183,7 @@ impl PerCoreFetchUnit {
 
 impl Default for PerCoreFetchUnit {
     fn default() -> Self {
-        Self::new()
+        Self::new(false)
     }
 }
 
@@ -133,14 +195,37 @@ pub struct FetchUnit<const CORE_COUNT: usize> {
 }
 
 impl<const CORE_COUNT: usize> FetchUnit<CORE_COUNT> {
-    pub fn new() -> Self {
+    pub fn new(collect_gem5_bbl_btb: bool) -> Self {
         FetchUnit {
-            private_units: std::array::from_fn(|_| PerCoreFetchUnit::new()),
+            private_units: std::array::from_fn(|_| PerCoreFetchUnit::new(collect_gem5_bbl_btb)),
         }
     }
 
-    pub fn train(&mut self, core_id: usize, pc: u64, result: BranchResolutionResult, target: u64) {
-        self.private_units[core_id].train(pc, result, target, core_id);
+    pub fn set_collect_gem5_bbl_btb(&mut self, enabled: bool) {
+        for unit in self.private_units.iter_mut() {
+            unit.set_collect_gem5_bbl_btb(enabled);
+        }
+    }
+
+    pub fn set_tage_decision_trace_limit(&mut self, limit: Option<usize>) {
+        for unit in self.private_units.iter_mut() {
+            unit.set_tage_decision_trace_limit(limit);
+        }
+    }
+
+    pub fn predict_direction(&self, core_id: usize, pc: u64, branch_type: BranchType) -> bool {
+        self.private_units[core_id].predict_direction(pc, branch_type)
+    }
+
+    pub fn train(
+        &mut self,
+        core_id: usize,
+        pc: u64,
+        result: BranchResolutionResult,
+        target: u64,
+        bbl_bytes: u64,
+    ) {
+        self.private_units[core_id].train(pc, result, target, bbl_bytes, core_id);
     }
 
     pub fn dump_training_trace(&self, folder_name: &str) {
@@ -150,10 +235,20 @@ impl<const CORE_COUNT: usize> FetchUnit<CORE_COUNT> {
             serde_json::to_writer(file, &self.private_units[i].tage.training_trace).unwrap();
         }
     }
+
+    pub fn dump_tage_decision_trace(&self, folder_name: &str) {
+        for i in 0..CORE_COUNT {
+            let file_name = format!("{}/tage_decision_trace_core_{}.json.zst", folder_name, i);
+            let file = std::fs::File::create(file_name).unwrap();
+            let mut file = zstd::Encoder::new(file, 3).unwrap();
+            serde_json::to_writer(&mut file, &self.private_units[i].tage.decision_trace).unwrap();
+            file.finish().unwrap();
+        }
+    }
 }
 
 impl<const CORE_COUNT: usize> Default for FetchUnit<CORE_COUNT> {
     fn default() -> Self {
-        Self::new()
+        Self::new(false)
     }
 }

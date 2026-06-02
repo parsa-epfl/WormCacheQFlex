@@ -20,7 +20,10 @@ unsafe extern "C" fn event_loop_callback() {
 
         let snapshot_info = snapshot_info_guard.take().unwrap();
 
-        println!("Snapshot request: {}", &snapshot_info.0);
+        println!(
+            "Snapshot request: {}, At Cycle: {}",
+            &snapshot_info.0, snapshot_info.1
+        );
 
         let c_snapshot_name = std::ffi::CString::new(snapshot_info.0.clone()).unwrap();
 
@@ -35,31 +38,59 @@ unsafe extern "C" fn event_loop_callback() {
 
 static SNAPSHOT_NAME: OnceLock<String> = OnceLock::new();
 static WARM_RATIO: OnceLock<f64> = OnceLock::new();
+static FALLBACK_CYCLES: OnceLock<Option<u64>> = OnceLock::new();
+static mut CURRENT_CYCLES: u64 = 0;
 
-unsafe extern "C" fn quantum_checking_callback(_: u64) -> bool {
+fn try_request_snapshot(snapshot_info: (String, u64), reason: &str) -> bool {
+    let snapshot_info_guard = SNAPSHOT_INFO.try_lock();
+    if snapshot_info_guard.is_none() {
+        return false;
+    }
+
+    let mut snapshot_info_guard = snapshot_info_guard.unwrap();
+
+    if snapshot_info_guard.is_none() {
+        *snapshot_info_guard = Some(snapshot_info);
+        println!("{}", reason);
+        return true; // suggest a interrupt.
+    }
+
+    false
+}
+
+unsafe extern "C" fn quantum_checking_callback(diff: u64) -> bool {
+    unsafe {
+        CURRENT_CYCLES += diff;
+    }
+
     let warmed_set = unsafe { (*super::PLUGIN).get_scache_warmed_set_count() };
     let warm_ratio = *WARM_RATIO.get().unwrap();
+    let current_cycles = unsafe { CURRENT_CYCLES };
 
     if warmed_set >= (parameter::SHARED_CACHE_SET as f64 * warm_ratio) as usize {
-        let snapshot_info = (SNAPSHOT_NAME.get().unwrap().clone(), 0);
-
-        let snapshot_info_guard = SNAPSHOT_INFO.try_lock();
-        if snapshot_info_guard.is_none() {
-            return false;
-        }
-
-        let mut snapshot_info_guard = snapshot_info_guard.unwrap();
-
-        if snapshot_info_guard.is_none() {
-            *snapshot_info_guard = Some(snapshot_info);
-            println!("All the sets are warmed up. Create a snapshot.");
-            return true; // suggest a interrupt.
+        if try_request_snapshot(
+            (SNAPSHOT_NAME.get().unwrap().clone(), current_cycles),
+            "All the sets are warmed up. Create a snapshot.",
+        ) {
+            return true;
         }
     }
+
+    if let Some(fallback_cycles) = *FALLBACK_CYCLES.get().unwrap() {
+        if current_cycles >= fallback_cycles
+            && try_request_snapshot(
+                (SNAPSHOT_NAME.get().unwrap().clone(), current_cycles),
+                "Fallback warmup cycle threshold reached. Create a snapshot.",
+            )
+        {
+            return true;
+        }
+    }
+
     return false;
 }
 
-pub unsafe fn init(name: &str, warm_ratio: f64) {
+pub unsafe fn init(name: &str, warm_ratio: f64, fallback_cycles: Option<u64>) {
     unsafe {
         assert!(qemu_api::qemu_plugin_register_event_loop_poll_cb(Some(
             event_loop_callback
@@ -74,4 +105,8 @@ pub unsafe fn init(name: &str, warm_ratio: f64) {
 
     assert!(warm_ratio >= 0.0 && warm_ratio <= 1.0);
     WARM_RATIO.set(warm_ratio).unwrap();
+    FALLBACK_CYCLES.set(fallback_cycles).unwrap();
+    unsafe {
+        CURRENT_CYCLES = 0;
+    }
 }
