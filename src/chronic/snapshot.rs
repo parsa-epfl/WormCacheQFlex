@@ -289,7 +289,7 @@ pub fn on_load_snapshot(snapshot_name: &str) {
     if fs::metadata(&base_file).is_ok() && fs::metadata(&state_file).is_ok() {
         update_snapshot_type("incremental");
         println!(
-            "Detected incremental base snapshot: {}. Following snaphots are generaed with delta",
+            "Detected incremental base snapshot: {}. Following snapshots are generated with delta",
             snapshot_name
         );
     }
