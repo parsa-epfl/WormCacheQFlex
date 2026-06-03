@@ -40,7 +40,7 @@ use crate::{arch::PageSize, qemu_api};
 
 use super::{ISA, TranslationResult};
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
 pub struct MiscRegs {
     pub cpsr: u64,
     pub sctlr_el1: u64,

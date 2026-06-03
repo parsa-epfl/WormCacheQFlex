@@ -134,7 +134,7 @@ impl<
         if parameter::L1TLB_ENABLED {
             // First, check the L1 TLB.
             if is_instruction {
-                if let Some(ppn) = self.itlb.lookup(vpn, asid, ts, is_instruction) {
+                if let Some(ppn) = self.itlb.lookup(vpn, asid, ts, is_instruction, &misc_regs) {
                     let pa = ppn << 12 | (va & 0xfff);
 
                     if parameter::COMPARE_TRANSLATION_RESULT_WITH_WALKER {
@@ -143,7 +143,7 @@ impl<
 
                     return MMUTranslationResult::Hit(pa, 1);
                 }
-            } else if let Some(ppn) = self.dtlb.lookup(vpn, asid, ts, is_instruction) {
+            } else if let Some(ppn) = self.dtlb.lookup(vpn, asid, ts, is_instruction, &misc_regs) {
                 let pa = ppn << 12 | (va & 0xfff);
 
                 if parameter::COMPARE_TRANSLATION_RESULT_WITH_WALKER {
@@ -156,7 +156,7 @@ impl<
 
         if S_ENABLED {
             // Then, we try L2 TLB.
-            if let Some(ppn) = self.stlb.lookup(vpn, asid, ts, is_instruction) {
+            if let Some(ppn) = self.stlb.lookup(vpn, asid, ts, is_instruction, &misc_regs) {
                 let pa = ppn << 12 | (va & 0xfff);
 
                 if parameter::COMPARE_TRANSLATION_RESULT_WITH_WALKER {
@@ -311,8 +311,9 @@ impl<
 
     fn lookup(&mut self, vpn: u64, ts: u64, is_instruction: bool) -> Option<u64> {
         let asid = tlb::AddressSpaceID::NonGlobal(ARCH::get_asid());
+        let misc_regs = ARCH::get_misc_regs();
 
-        self.stlb.lookup(vpn, asid, ts, is_instruction)
+        self.stlb.lookup(vpn, asid, ts, is_instruction, &misc_regs)
     }
 
     fn serialize(&self) -> serde_json::Value {

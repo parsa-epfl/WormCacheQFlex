@@ -20,7 +20,7 @@ pub struct FullyAssociativeL1MMU<
     const S_T_SETS: usize = 64,
     const NO_HUGE_PAGE: bool = false,
 > {
-    l0_itlb: (u64, AddressSpaceID, u64),
+    l0_itlb: (u64, AddressSpaceID, u64, MiscRegs),
     stlb: TLB<S_T_SETS, S_T_ASSO>,
     itlb: FullyAssociativeTLB,
     dtlb: FullyAssociativeTLB,
@@ -47,13 +47,13 @@ impl<
         is_instruction: bool,
         misc_regs: MiscRegs,
     ) {
-        self.stlb.insert(vpn, asid, ppn, ts, is_instruction, misc_regs);
+        self.stlb.insert(vpn, asid, ppn, ts, is_instruction, misc_regs.clone());
 
         if parameter::L1TLB_ENABLED {
             if is_instruction {
-                self.itlb.deferred_insert(vpn, asid, ts, ppn);
+                self.itlb.deferred_insert(vpn, asid, ts, ppn, misc_regs);
             } else {
-                self.dtlb.deferred_insert(vpn, asid, ts, ppn);
+                self.dtlb.deferred_insert(vpn, asid, ts, ppn, misc_regs);
             }
         }
     }
@@ -70,7 +70,7 @@ impl<
 {
     fn new() -> Self {
         Self {
-            l0_itlb: (0, AddressSpaceID::NonGlobal(0), 0),
+            l0_itlb: (0, AddressSpaceID::NonGlobal(0), 0, MiscRegs::default()),
             stlb: TLB::new(),
             itlb: FullyAssociativeTLB::new(I_T_A),
             dtlb: FullyAssociativeTLB::new(D_T_A),
@@ -95,7 +95,9 @@ impl<
 
         if is_instruction {
             // check the L0 ITLB.
-            if self.l0_itlb.0 == vpn && self.l0_itlb.1 == trial_asid {
+            if self.l0_itlb.0 == vpn && self.l0_itlb.1 == trial_asid
+                && self.l0_itlb.3 == misc_regs
+            {
                 let pa = self.l0_itlb.2 << 12 | (va & 0xfff);
                 if parameter::COMPARE_TRANSLATION_RESULT_WITH_WALKER {
                     assert_eq!(pa, ARCH::translate_in_pt(va));
@@ -106,12 +108,12 @@ impl<
         }
 
         // First, we check the L2 TLB.
-        if let Some((ppn, asid, stlb_ts)) = self.stlb.peek(vpn, trial_asid) {
+        if let Some((ppn, asid, stlb_ts)) = self.stlb.peek(vpn, trial_asid, &misc_regs) {
             if parameter::L1TLB_ENABLED {
                 if is_instruction {
-                    self.itlb.deferred_insert(vpn, asid, ts, ppn)
+                    self.itlb.deferred_insert(vpn, asid, ts, ppn, misc_regs.clone())
                 } else {
-                    self.dtlb.deferred_insert(vpn, asid, ts, ppn)
+                    self.dtlb.deferred_insert(vpn, asid, ts, ppn, misc_regs.clone())
                 };
             }
 
@@ -124,7 +126,7 @@ impl<
             }
 
             if is_instruction {
-                self.l0_itlb = (vpn, trial_asid, ppn);
+                self.l0_itlb = (vpn, trial_asid, ppn, misc_regs.clone());
             }
 
             return MMUTranslationResult::Hit(pa, 2);
@@ -134,7 +136,7 @@ impl<
             // Alrignt. Then we have to check the L1 TLB, which has higher associativity.
             if is_instruction {
                 self.itlb.run_lru();
-                if let Some(ppn) = self.itlb.lookup(vpn, raw_asid as u16, ts) {
+                if let Some(ppn) = self.itlb.lookup(vpn, raw_asid as u16, ts, &misc_regs) {
                     let pa = ppn << 12 | (va & 0xfff);
 
                     if parameter::COMPARE_TRANSLATION_RESULT_WITH_WALKER {
@@ -142,14 +144,14 @@ impl<
                     }
 
                     if is_instruction {
-                        self.l0_itlb = (vpn, trial_asid, ppn);
+                        self.l0_itlb = (vpn, trial_asid, ppn, misc_regs.clone());
                     }
 
                     return MMUTranslationResult::Hit(pa, 1);
                 }
             } else {
                 self.dtlb.run_lru();
-                if let Some(ppn) = self.dtlb.lookup(vpn, raw_asid as u16, ts) {
+                if let Some(ppn) = self.dtlb.lookup(vpn, raw_asid as u16, ts, &misc_regs) {
                     let pa = ppn << 12 | (va & 0xfff);
 
                     if parameter::COMPARE_TRANSLATION_RESULT_WITH_WALKER {
@@ -171,9 +173,16 @@ impl<
 
         if ptw_result.cacheable {
             // based on the ptw_result, we refill each TLB correspondingly.
-            self.refill_4k_tlb(vpn, asid, ptw_result.paddr >> 12, ts, is_instruction, misc_regs);
+            self.refill_4k_tlb(
+                vpn,
+                asid,
+                ptw_result.paddr >> 12,
+                ts,
+                is_instruction,
+                misc_regs.clone(),
+            );
             if is_instruction {
-                self.l0_itlb = (vpn, trial_asid, ptw_result.paddr >> 12);
+                self.l0_itlb = (vpn, trial_asid, ptw_result.paddr >> 12, misc_regs);
             }
             MMUTranslationResult::Miss(ptw_result.paddr, ptw_result.traces)
         } else {
@@ -187,7 +196,7 @@ impl<
 
     fn flush(&mut self, mode: super::MMUFlushMode) {
         // invalid l0_itlb
-        self.l0_itlb = (0, AddressSpaceID::NonGlobal(0), 0);
+        self.l0_itlb = (0, AddressSpaceID::NonGlobal(0), 0, MiscRegs::default());
         self.itlb.flush(mode);
         self.dtlb.flush(mode);
         self.stlb.flush(mode);
