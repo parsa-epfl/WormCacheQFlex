@@ -949,3 +949,6 @@ unsafe extern "C" {
 unsafe extern "C" {
     pub fn qemu_plugin_notify_fully_warmed();
 }
+unsafe extern "C" {
+    pub fn qemu_plugin_pdes_fw_complete();
+}
