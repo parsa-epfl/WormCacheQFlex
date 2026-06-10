@@ -27,6 +27,7 @@ unsafe extern "C" fn event_loop_callback() {
         qemu_api::qemu_plugin_savevm(
             c_snapshot_name.as_ptr(),
             qemu_api::qemu_plugin_snapshot_format_t_QEMU_PLUGIN_SNAPSHOT_FORMAT_EXTERNAL_INCREMENTAL_BASE,
+            false,
         );
 
         std::process::exit(0);
