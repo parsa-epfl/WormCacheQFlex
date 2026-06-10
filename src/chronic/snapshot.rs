@@ -53,6 +53,7 @@ static mut PERIODIC_SNAPSHOT_THRESHOLD: u64 = 0xffff_ffff_ffff_ffff;
 static mut PERIODIC_SNAPSHOT_INTERVAL: u64 = 0xffff_ffff_ffff_ffff;
 static mut PERIODIC_SNAPSHOT_CURRENT_CYCLES: u64 = 0;
 static mut PERIODIC_SNAPSHOT_NO_QEMU_SNAPSHOT: bool = false;
+static EMIT_GEM: OnceLock<bool> = OnceLock::new();
 
 static SNAPSHOT_PREFIX: OnceLock<String> = OnceLock::new();
 static QEMU_SNAPSHOT_FORMAT: OnceLock<SpinMutex<String>> = OnceLock::new();
@@ -95,7 +96,11 @@ unsafe extern "C" fn event_loop_callback() {
 
         // get the current timestamp in miliseconds
         let current_time = std::time::SystemTime::now();
-        qemu_api::qemu_plugin_savevm(c_snapshot_name.as_ptr(), snapshot_format);
+        qemu_api::qemu_plugin_savevm(
+            c_snapshot_name.as_ptr(),
+            snapshot_format,
+            *EMIT_GEM.get().unwrap_or(&false),
+        );
         let elapsed_time = std::time::SystemTime::now()
             .duration_since(current_time)
             .unwrap()
@@ -225,6 +230,7 @@ pub unsafe fn init(
     required_count: u64,
     prefix: String,
     init_index: u64,
+    emit_gem: bool,
     no_qemu_snapshot: bool,
 ) {
     unsafe {
@@ -234,6 +240,7 @@ pub unsafe fn init(
         SNAPSHOT_PREFIX.set(prefix).unwrap();
         PERIODIC_SNAPSHOT_INIT_INDEX = init_index;
         PERIODIC_SNAPSHOT_NO_QEMU_SNAPSHOT = no_qemu_snapshot;
+        EMIT_GEM.set(emit_gem).expect("Failed to set emit_gem policy.");
 
         // make the default snapshot format to be incremental_first_base.
         QEMU_SNAPSHOT_FORMAT
