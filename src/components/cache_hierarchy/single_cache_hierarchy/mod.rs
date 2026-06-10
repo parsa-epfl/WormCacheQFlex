@@ -72,7 +72,7 @@ unsafe extern "C" fn vcpu_mem_access(
 
             let pa = qemu_api::qemu_plugin_hwaddr_phys_addr(hw_handler);
 
-            if parameter::MEASURE_HALF_OF_CORES && vcpu_idx >= parameter::CORE_COUNT as u32 / 2 {
+            if vcpu_idx >= parameter::REAL_CORE_COUNT as u32 {
             } else {
                 (*PLUGIN).access_memory_with_va_and_pa(
                     &MemoryAccessRequest {
@@ -111,7 +111,7 @@ unsafe extern "C" fn vcpu_insn_exec(
             return;
         }
 
-        if parameter::MEASURE_HALF_OF_CORES && vcpu_idx >= parameter::CORE_COUNT as u32 / 2 {
+        if vcpu_idx >= parameter::REAL_CORE_COUNT as u32 {
         } else {
             (*PLUGIN).access_memory_with_va(
                 &MemoryAccessRequest {

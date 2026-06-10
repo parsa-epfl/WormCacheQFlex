@@ -47,10 +47,18 @@ unsafe extern "C" fn quantum_checking_callback(_: u64) -> bool {
         return false;
     }
 
-    let warmed_set = unsafe { (*super::PLUGIN).get_scache_warmed_set_count() };
     let warm_ratio = *WARM_RATIO.get().unwrap();
+    // An all-phantom node (REAL_CORE_COUNT == 0) warms nothing, so the shared cache never fills and
+    // the warmed-set count stays 0 — treat it as fully warmed immediately so it signals "ready to
+    // checkpoint" right away instead of hanging the master forever waiting for CTRL_CKP_INIT.
+    let warmed = if parameter::REAL_CORE_COUNT == 0 {
+        true
+    } else {
+        let warmed_set = unsafe { (*super::PLUGIN).get_scache_warmed_set_count() };
+        warmed_set >= (parameter::SHARED_CACHE_SET as f64 * warm_ratio) as usize
+    };
 
-    if warmed_set >= (parameter::SHARED_CACHE_SET as f64 * warm_ratio) as usize {
+    if warmed {
         let snapshot_info = (SNAPSHOT_NAME.get().unwrap().clone(), 0);
 
         let snapshot_info_guard = SNAPSHOT_INFO.try_lock();
