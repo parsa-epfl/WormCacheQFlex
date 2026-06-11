@@ -187,12 +187,18 @@ impl super::super::Plugin for ParallelCacheHierarchyPlugin {
                     .get("warm_ratio")
                     .unwrap_or(&"1.0".to_string())
                     .clone();
+                let fallback_cycles = options.get("fallback_cycles").cloned();
                 let warm_ratio: f64 = warm_ratio.parse().unwrap();
+                let fallback_cycles = fallback_cycles.map(|cycles| {
+                    cycles
+                        .parse()
+                        .expect("fallback_cycles must be a non-negative integer")
+                });
                 println!(
-                    "Pure fill mode is enabled. The cache will be warmed up with the prefix: {}, warm ratio: {}",
-                    prefix, warm_ratio
+                    "Pure fill mode is enabled. The cache will be warmed up with the prefix: {}, warm ratio: {}, fallback cycles: {:?}",
+                    prefix, warm_ratio, fallback_cycles
                 );
-                pure_fill::init(&prefix, warm_ratio);
+                pure_fill::init(&prefix, warm_ratio, fallback_cycles);
             }
         }
 

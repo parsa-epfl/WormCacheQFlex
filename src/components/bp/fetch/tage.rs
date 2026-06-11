@@ -187,6 +187,36 @@ pub struct TAGETrainingTrace {
     ch_t: [[u32; NHIST]; 2],
 }
 
+/// Compact per-conditional decision log for cross-checking WormCache and gem5
+/// TAGE behavior.
+///
+/// WormCache's current TAGE implementation does not expose gem5's
+/// `useAltPredForNewlyAllocated` policy, so it only emits:
+/// 0 = BIMODAL_ONLY
+/// 1 = TAGE_LONGEST_MATCH
+///
+/// Codes 2/3 remain reserved for future parity if WormCache grows an explicit
+/// alternate-provider decision path.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TAGEDecisionTrace {
+    pc: Address,
+    direction: bool,
+    prediction_result: bool,
+    provider: u8,
+    bank: i32,
+    bank_index: i32,
+    bank_ctr: i8,
+    bank_ubit: i8,
+    alternate_prediction: bool,
+    alternate_bank: i32,
+    alternate_bank_index: i32,
+    alternate_bank_ctr: i8,
+    bi: usize,
+    bimodal_pred: bool,
+    bimodal_hyst: i8,
+    phist: i32,
+}
+
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TAGEPredictor {
@@ -214,6 +244,12 @@ pub struct TAGEPredictor {
 
     #[serde(skip)]
     pub training_trace: Vec<TAGETrainingTrace>,
+    #[serde(skip)]
+    pub decision_trace: Vec<TAGEDecisionTrace>,
+    #[serde(skip)]
+    pub decision_trace_enabled: bool,
+    #[serde(skip)]
+    pub decision_trace_limit: Option<usize>,
     // Debugging training trace.
 }
 
@@ -290,7 +326,98 @@ impl TAGEPredictor {
             }),
 
             training_trace: vec![],
+            decision_trace: vec![],
+            decision_trace_enabled: false,
+            decision_trace_limit: None,
         }
+    }
+
+    pub fn set_decision_trace_limit(&mut self, limit: Option<usize>) {
+        self.decision_trace_enabled = true;
+        self.decision_trace_limit = limit;
+    }
+
+    pub fn clear_debug_traces(&mut self) {
+        self.training_trace.clear();
+        self.decision_trace.clear();
+    }
+
+    fn record_decision_trace(
+        &mut self,
+        pc: Address,
+        taken: bool,
+        prediction_result: &TAGEPredictionResultWithBank,
+    ) {
+        if !self.decision_trace_enabled {
+            return;
+        }
+
+        if matches!(
+            self.decision_trace_limit,
+            Some(limit) if self.decision_trace.len() >= limit
+        ) {
+            return;
+        }
+
+        let bank = if prediction_result.bank < NHIST {
+            prediction_result.bank as i32
+        } else {
+            -1
+        };
+        let bank_index = if prediction_result.bank < NHIST {
+            prediction_result.gi[prediction_result.bank] as i32
+        } else {
+            -1
+        };
+        let bank_ctr = if prediction_result.bank < NHIST {
+            self.gtable[prediction_result.bank][prediction_result.gi[prediction_result.bank]].ctr
+        } else {
+            0
+        };
+        let bank_ubit = if prediction_result.bank < NHIST {
+            self.gtable[prediction_result.bank][prediction_result.gi[prediction_result.bank]].ubit
+        } else {
+            0
+        };
+
+        let alternate_bank = if prediction_result.alternate_bank < NHIST {
+            prediction_result.alternate_bank as i32
+        } else {
+            -1
+        };
+        let alternate_bank_index = if prediction_result.alternate_bank < NHIST {
+            prediction_result.gi[prediction_result.alternate_bank] as i32
+        } else {
+            -1
+        };
+        let alternate_bank_ctr = if prediction_result.alternate_bank < NHIST {
+            self.gtable[prediction_result.alternate_bank]
+                [prediction_result.gi[prediction_result.alternate_bank]]
+                .ctr
+        } else {
+            0
+        };
+
+        let provider = if prediction_result.bank < NHIST { 1 } else { 0 };
+
+        self.decision_trace.push(TAGEDecisionTrace {
+            pc,
+            direction: taken,
+            prediction_result: prediction_result.result,
+            provider,
+            bank,
+            bank_index,
+            bank_ctr,
+            bank_ubit,
+            alternate_prediction: prediction_result.alternate_prediction,
+            alternate_bank,
+            alternate_bank_index,
+            alternate_bank_ctr,
+            bi: prediction_result.bi,
+            bimodal_pred: self.btable[prediction_result.bi].pred > 0,
+            bimodal_hyst: self.btable[prediction_result.bi].hyst,
+            phist: self.phist,
+        });
     }
 
     fn bindex(&self, shifted_pc: Address) -> usize {
@@ -454,6 +581,8 @@ impl TAGEPredictor {
                 }
             }
         }
+
+        self.record_decision_trace(pc, taken, &prediction_result);
 
         if allocation {
             assert!(prediction_result.result != taken);

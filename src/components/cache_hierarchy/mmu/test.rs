@@ -9,6 +9,10 @@ impl ISA for FakeISA {
         0
     }
 
+    fn get_misc_regs() -> crate::arch::MiscRegs {
+        crate::arch::MiscRegs::default()
+    }
+
     fn ptw(va: u64) -> crate::arch::TranslationResult {
         crate::arch::TranslationResult {
             paddr: va,
@@ -37,18 +41,19 @@ fn test_equivalence_of_two_tlbs() {
             let asid = super::AddressSpaceID::NonGlobal(0);
             let ppn = rng.gen_range(1..66);
 
-            ordinary_tlb.insert(vpn, asid, ppn, ts, false);
-            fw_tlb.deferred_insert(vpn, asid, ts, ppn);
+            ordinary_tlb.insert(vpn, asid, ppn, ts, false, crate::arch::MiscRegs::default());
+            fw_tlb.deferred_insert(vpn, asid, ts, ppn, crate::arch::MiscRegs::default());
         } else {
             // Lookup
             let vpn = rng.gen_range(1..66);
             let raw_asid = 0;
             let asid = super::AddressSpaceID::NonGlobal(raw_asid);
 
-            let ordinary_result = ordinary_tlb.lookup(vpn, asid, ts, false);
+            let ordinary_result =
+                ordinary_tlb.lookup(vpn, asid, ts, false, &crate::arch::MiscRegs::default());
 
             fw_tlb.run_lru();
-            let fw_result = fw_tlb.lookup(vpn, raw_asid, ts);
+            let fw_result = fw_tlb.lookup(vpn, raw_asid, ts, &crate::arch::MiscRegs::default());
 
             assert_eq!(ordinary_result, fw_result);
         }

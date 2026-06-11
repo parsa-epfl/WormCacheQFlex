@@ -31,7 +31,10 @@
 
 pub mod fetch;
 
-use std::io::Write;
+use core::ffi;
+use std::fs::File;
+use std::io::{LineWriter, Write};
+use std::sync::{Mutex, OnceLock};
 
 use super::Plugin;
 use crate::{parameter, qemu_api};
@@ -114,6 +117,48 @@ const ALLOCATED_CORE: usize = if parameter::MEASURE_HALF_OF_CORES {
 };
 
 static mut FETCH_UNIT: *mut fetch::FetchUnit<{ ALLOCATED_CORE }> = std::ptr::null_mut();
+static TAGE_DECISION_TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
+static TAGE_DECISION_TRACE_LIMIT: OnceLock<Option<usize>> = OnceLock::new();
+static BRANCH_LOGS: OnceLock<Vec<Mutex<LineWriter<File>>>> = OnceLock::new();
+static COLLECT_GEM5_BBL_BTB: OnceLock<bool> = OnceLock::new();
+
+#[derive(Default, Debug, Clone, Copy)]
+struct CoreBbState {
+    current_bb_start: Option<u64>,
+    prev_pc: Option<u64>,
+    next_pc_starts_new_bb: bool,
+}
+
+static BB_STATES: OnceLock<Vec<Mutex<CoreBbState>>> = OnceLock::new();
+
+unsafe extern "C" fn vcpu_insn_exec(vcpu_idx: u32, inst_virtual_addr: *mut ffi::c_void) {
+    if !*COLLECT_GEM5_BBL_BTB.get().unwrap_or(&false) {
+        return;
+    }
+    if parameter::MEASURE_HALF_OF_CORES && vcpu_idx >= parameter::CORE_COUNT as u32 / 2 {
+        return;
+    }
+
+    let pc_vpn = unsafe { qemu_api::qemu_plugin_read_pc_vpn() };
+    let pc = (pc_vpn << 12) | (inst_virtual_addr as u64 & 0xfff);
+
+    if let Some(states) = BB_STATES.get() {
+        if let Some(state) = states.get(vcpu_idx as usize) {
+            if let Ok(mut state) = state.lock() {
+                let starts_new_bb = state.current_bb_start.is_none()
+                    || state.next_pc_starts_new_bb
+                    || state.prev_pc.map_or(false, |prev_pc| prev_pc.saturating_add(4) != pc);
+
+                if starts_new_bb {
+                    state.current_bb_start = Some(pc);
+                    state.next_pc_starts_new_bb = false;
+                }
+
+                state.prev_pc = Some(pc);
+            }
+        }
+    }
+}
 
 unsafe extern "C" fn branch_resolved_cb(vcpu_index: u32, pc: u64, target: u64, flags: u32) {
     unsafe {
@@ -121,12 +166,68 @@ unsafe extern "C" fn branch_resolved_cb(vcpu_index: u32, pc: u64, target: u64, f
             return;
         }
 
+        if let Some(logs) = BRANCH_LOGS.get() {
+            if let Some(log) = logs.get(vcpu_index as usize) {
+                if let Ok(mut log) = log.lock() {
+                    let _ = writeln!(log, "{}", pc);
+                }
+            }
+        }
+
         let result = BranchResolutionResult::from_u32(flags);
-        (*FETCH_UNIT).train(vcpu_index as usize, pc, result, target)
+        let collect_gem5_bbl_btb = *COLLECT_GEM5_BBL_BTB.get().unwrap_or(&false);
+        let bbl_bytes = if collect_gem5_bbl_btb {
+            BB_STATES
+                .get()
+                .and_then(|states| states.get(vcpu_index as usize))
+                .and_then(|state| state.lock().ok().map(|state| state.current_bb_start))
+                .flatten()
+                .map(|bb_start| pc.saturating_sub(bb_start))
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        if collect_gem5_bbl_btb {
+            if let Some(states) = BB_STATES.get() {
+                if let Some(state) = states.get(vcpu_index as usize) {
+                    if let Ok(mut state) = state.lock() {
+                        state.next_pc_starts_new_bb = true;
+                    }
+                }
+            }
+        }
+
+        (*FETCH_UNIT).train(vcpu_index as usize, pc, result, target, bbl_bytes)
     }
 }
 
 pub struct BranchPredictorPlugin {}
+
+fn option_enabled(options: &FxHashMap<String, String>, key: &str) -> bool {
+    match options.get(key).map(|v| v.as_str()) {
+        Some("1") | Some("true") | Some("yes") | Some("on") => true,
+        _ => false,
+    }
+}
+
+fn option_usize(options: &FxHashMap<String, String>, key: &str) -> Option<usize> {
+    options.get(key).map(|value| {
+        value
+            .parse::<usize>()
+            .unwrap_or_else(|_| panic!("Invalid {} value: {}", key, value))
+    })
+}
+
+fn reset_bb_states() {
+    if let Some(states) = BB_STATES.get() {
+        for state in states.iter() {
+            if let Ok(mut state) = state.lock() {
+                *state = CoreBbState::default();
+            }
+        }
+    }
+}
 
 impl Plugin for BranchPredictorPlugin {
     fn init(_plugin_id: u64, options: &FxHashMap<String, String>) {
@@ -145,13 +246,67 @@ impl Plugin for BranchPredictorPlugin {
             qemu_api::qemu_plugin_register_vcpu_branch_resolved_cb(Some(branch_resolved_cb))
         });
 
+        let tage_decision_trace = option_enabled(options, "tage_decision_trace");
+        TAGE_DECISION_TRACE_ENABLED
+            .set(tage_decision_trace)
+            .expect("Failed to initialize TAGE decision trace option.");
+        let collect_gem5_bbl_btb = option_enabled(options, "collect_gem5_bbl_btb");
+        COLLECT_GEM5_BBL_BTB
+            .set(collect_gem5_bbl_btb)
+            .expect("Failed to initialize gem5 BBL-BTB collection option.");
+        let tage_decision_trace_limit = option_usize(options, "tage_decision_trace_limit");
+        TAGE_DECISION_TRACE_LIMIT
+            .set(tage_decision_trace_limit)
+            .expect("Failed to initialize TAGE decision trace limit option.");
         unsafe {
-            FETCH_UNIT = Box::into_raw(Box::new(fetch::FetchUnit::new()));
+            FETCH_UNIT = Box::into_raw(Box::new(fetch::FetchUnit::new(collect_gem5_bbl_btb)));
+            if tage_decision_trace {
+                (*FETCH_UNIT).set_tage_decision_trace_limit(tage_decision_trace_limit);
+            }
+        }
+        if collect_gem5_bbl_btb {
+            BB_STATES
+                .set(
+                    (0..ALLOCATED_CORE)
+                        .map(|_| Mutex::new(CoreBbState::default()))
+                        .collect(),
+                )
+                .expect("Failed to initialize BTB basic-block tracking state.");
+        }
+
+        if option_enabled(options, "branch_trace") {
+            let mut logs = Vec::with_capacity(ALLOCATED_CORE);
+            for core_id in 0..ALLOCATED_CORE {
+                let file = File::create(format!("branch_trace_core_{}.log", core_id))
+                    .expect("Failed to create branch trace log file.");
+                logs.push(Mutex::new(LineWriter::new(file)));
+            }
+            BRANCH_LOGS
+                .set(logs)
+                .expect("Failed to initialize branch trace logs.");
         }
     }
 
-    unsafe fn on_translation(_: *mut crate::qemu_api::qemu_plugin_tb) {
-        // The callback is already inserted into the TB during init.
+    unsafe fn on_translation(tb: *mut crate::qemu_api::qemu_plugin_tb) {
+        let instruction_count = unsafe { qemu_api::qemu_plugin_tb_n_insns(tb) };
+        if instruction_count == 0 {
+            return;
+        }
+
+        if *COLLECT_GEM5_BBL_BTB.get().unwrap_or(&false) {
+            for i in 0..instruction_count {
+                let insn = unsafe { qemu_api::qemu_plugin_tb_get_insn(tb, i) };
+                let insn_addr = unsafe { qemu_api::qemu_plugin_insn_vaddr(insn) };
+                unsafe {
+                    qemu_api::qemu_plugin_register_vcpu_insn_exec_cb(
+                        insn,
+                        Some(vcpu_insn_exec),
+                        qemu_api::qemu_plugin_cb_flags_QEMU_PLUGIN_CB_NO_REGS,
+                        insn_addr as *mut ffi::c_void,
+                    );
+                }
+            }
+        }
     }
 
     fn serialize(name: &str) {
@@ -165,10 +320,6 @@ impl Plugin for BranchPredictorPlugin {
         file.write_all(json.as_bytes()).unwrap();
 
         file.finish().unwrap();
-
-        // unsafe {
-        //     (*FETCH_UNIT).dump_training_trace(name);
-        // }
     }
 
     fn deserialize(name: &str) {
@@ -191,5 +342,35 @@ impl Plugin for BranchPredictorPlugin {
         let mut reader = serde_json::Deserializer::from_reader(reader);
 
         Deserialize::deserialize_in_place(&mut reader, unsafe { &mut (*FETCH_UNIT) }).unwrap();
+        let collect_gem5_bbl_btb = *COLLECT_GEM5_BBL_BTB.get().unwrap_or(&false);
+        let tage_decision_trace = *TAGE_DECISION_TRACE_ENABLED.get().unwrap_or(&false);
+        let tage_decision_trace_limit = *TAGE_DECISION_TRACE_LIMIT.get().unwrap_or(&None);
+        reset_bb_states();
+        unsafe {
+            (*FETCH_UNIT).clear_tage_debug_traces();
+            (*FETCH_UNIT).set_collect_gem5_bbl_btb(collect_gem5_bbl_btb);
+            if tage_decision_trace {
+                (*FETCH_UNIT).set_tage_decision_trace_limit(tage_decision_trace_limit);
+            }
+        }
+    }
+}
+
+impl BranchPredictorPlugin {
+    pub fn dump_tage_decision_trace(folder_name: &str) {
+        if !*TAGE_DECISION_TRACE_ENABLED.get().unwrap_or(&false) {
+            return;
+        }
+
+        unsafe {
+            if !FETCH_UNIT.is_null() {
+                if let Err(err) = (*FETCH_UNIT).dump_tage_decision_trace(folder_name) {
+                    eprintln!(
+                        "Failed to dump TAGE decision trace under {}: {}",
+                        folder_name, err
+                    );
+                }
+            }
+        }
     }
 }

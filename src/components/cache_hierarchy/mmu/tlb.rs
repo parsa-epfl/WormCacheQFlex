@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::collections::VecDeque;
 
+use crate::arch::MiscRegs;
 use super::MMUFlushMode;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy, Eq, Hash)]
@@ -63,6 +64,8 @@ pub struct TLBEntry {
     pub vpn: u64,
     pub ppn: u64,
     pub is_instruction: bool,
+    #[serde(default)]
+    pub misc_regs: MiscRegs,
 }
 
 #[serde_as]
@@ -83,6 +86,7 @@ impl<const ASSO: usize> TLBSet<ASSO> {
                 vpn: 0,
                 ppn: 0,
                 is_instruction: false,
+                misc_regs: MiscRegs::default(),
             }),
             current_pointer: 0,
         }
@@ -94,11 +98,14 @@ impl<const ASSO: usize> TLBSet<ASSO> {
         asid: AddressSpaceID,
         ts: u64,
         is_instruction: bool,
+        misc_regs: &MiscRegs,
     ) -> Option<u64> {
         // TODO: This function is badly implemented. Currently its algorithm complexity is O(n).
         // This will be a problem for 64 entry TLB sets, but whatever. A good design will be implemented later.
         for entry in self.entries.iter_mut() {
-            if entry.valid && entry.vpn == vpn && entry.asid.check(&asid) {
+            if entry.valid && entry.vpn == vpn && entry.asid.check(&asid)
+                && entry.misc_regs == *misc_regs
+            {
                 assert!(
                     entry.ts <= ts,
                     "TLB entry is older than the current timestamp.",
@@ -119,6 +126,7 @@ impl<const ASSO: usize> TLBSet<ASSO> {
         ppn: u64,
         ts: u64,
         is_instruction: bool,
+        misc_regs: MiscRegs,
     ) {
         if self.current_pointer < ASSO {
             self.entries[self.current_pointer].valid = true;
@@ -127,6 +135,7 @@ impl<const ASSO: usize> TLBSet<ASSO> {
             self.entries[self.current_pointer].vpn = vpn;
             self.entries[self.current_pointer].ppn = ppn;
             self.entries[self.current_pointer].is_instruction = is_instruction;
+            self.entries[self.current_pointer].misc_regs = misc_regs;
             self.current_pointer += 1;
         } else {
             // find a victim.
@@ -142,6 +151,7 @@ impl<const ASSO: usize> TLBSet<ASSO> {
             self.entries[victim_idx].vpn = vpn;
             self.entries[victim_idx].ppn = ppn;
             self.entries[victim_idx].is_instruction = is_instruction;
+            self.entries[victim_idx].misc_regs = misc_regs;
         }
     }
 }
@@ -158,11 +168,18 @@ impl<const SET_COUNT: usize, const ASSO: usize> TLB<SET_COUNT, ASSO> {
         }
     }
 
-    pub fn peek(&mut self, vpn: u64, asid: AddressSpaceID) -> Option<(u64, AddressSpaceID, &mut u64)> {
+    pub fn peek(
+        &mut self,
+        vpn: u64,
+        asid: AddressSpaceID,
+        misc_regs: &MiscRegs,
+    ) -> Option<(u64, AddressSpaceID, &mut u64)> {
         let set_index = vpn % SET_COUNT as u64;
         let set = &mut self.entries[set_index as usize];
         for entry in set.entries.iter_mut() {
-            if entry.valid && entry.vpn == vpn && entry.asid.check(&asid) {
+            if entry.valid && entry.vpn == vpn && entry.asid.check(&asid)
+                && entry.misc_regs == *misc_regs
+            {
                 return Some((entry.ppn, entry.asid, &mut entry.ts));
             }
         }
@@ -175,10 +192,11 @@ impl<const SET_COUNT: usize, const ASSO: usize> TLB<SET_COUNT, ASSO> {
         asid: AddressSpaceID,
         ts: u64,
         is_instruction: bool,
+        misc_regs: &MiscRegs,
     ) -> Option<u64> {
         let set_index = vpn % SET_COUNT as u64;
         let set = &mut self.entries[set_index as usize];
-        set.lookup(vpn, asid, ts, is_instruction)
+        set.lookup(vpn, asid, ts, is_instruction, misc_regs)
     }
 
     pub fn insert(
@@ -188,10 +206,11 @@ impl<const SET_COUNT: usize, const ASSO: usize> TLB<SET_COUNT, ASSO> {
         ppn: u64,
         ts: u64,
         is_instruction: bool,
+        misc_regs: MiscRegs,
     ) {
         let set_index = vpn % SET_COUNT as u64;
         let set = &mut self.entries[set_index as usize];
-        set.insert(vpn, asid, ppn, ts, is_instruction);
+        set.insert(vpn, asid, ppn, ts, is_instruction, misc_regs);
     }
 
     pub fn flush(&mut self, mode: MMUFlushMode) {
@@ -268,9 +287,9 @@ mod tests {
     #[test]
     fn test_tlbset_insert_and_lookup() {
         let mut tlbset: TLBSet<4> = TLBSet::new();
-        tlbset.insert(1, AddressSpaceID::NonGlobal(1), 1, 1, false);
+        tlbset.insert(1, AddressSpaceID::NonGlobal(1), 1, 1, false, MiscRegs::default());
         assert_eq!(
-            tlbset.lookup(1, AddressSpaceID::NonGlobal(1), 2, false),
+            tlbset.lookup(1, AddressSpaceID::NonGlobal(1), 2, false, &MiscRegs::default()),
             Some(1)
         );
     }
@@ -284,25 +303,48 @@ mod tests {
     #[test]
     fn test_tlb_insert_and_lookup() {
         let mut tlb: TLB<4, 4> = TLB::new();
-        tlb.insert(1, AddressSpaceID::NonGlobal(1), 1, 1, false);
+        tlb.insert(1, AddressSpaceID::NonGlobal(1), 1, 1, false, MiscRegs::default());
         assert_eq!(
-            tlb.lookup(1, AddressSpaceID::NonGlobal(1), 2, false),
+            tlb.lookup(1, AddressSpaceID::NonGlobal(1), 2, false, &MiscRegs::default()),
             Some(1)
+        );
+    }
+
+    #[test]
+    fn test_tlb_lookup_requires_matching_misc_regs() {
+        let mut tlb: TLB<1, 4> = TLB::new();
+        let mut inserted_regs = MiscRegs::default();
+        inserted_regs.ttbr0_el1 = 0x1000;
+        let mut probed_regs = MiscRegs::default();
+        probed_regs.ttbr0_el1 = 0x2000;
+
+        tlb.insert(
+            1,
+            AddressSpaceID::NonGlobal(1),
+            1,
+            1,
+            false,
+            inserted_regs,
+        );
+
+        assert_eq!(
+            tlb.lookup(1, AddressSpaceID::NonGlobal(1), 2, false, &probed_regs),
+            None
         );
     }
 
     #[test]
     fn test_tlbset_replacement_policy() {
         let mut tlbset: TLBSet<4> = TLBSet::new();
-        tlbset.insert(1, AddressSpaceID::NonGlobal(1), 1, 1, false);
-        tlbset.insert(2, AddressSpaceID::NonGlobal(2), 2, 2, false);
-        tlbset.insert(3, AddressSpaceID::NonGlobal(3), 3, 3, false);
-        tlbset.insert(4, AddressSpaceID::NonGlobal(4), 4, 4, false);
-        tlbset.insert(5, AddressSpaceID::NonGlobal(5), 5, 5, false); // This should replace the first entry
+        tlbset.insert(1, AddressSpaceID::NonGlobal(1), 1, 1, false, MiscRegs::default());
+        tlbset.insert(2, AddressSpaceID::NonGlobal(2), 2, 2, false, MiscRegs::default());
+        tlbset.insert(3, AddressSpaceID::NonGlobal(3), 3, 3, false, MiscRegs::default());
+        tlbset.insert(4, AddressSpaceID::NonGlobal(4), 4, 4, false, MiscRegs::default());
+        tlbset.insert(5, AddressSpaceID::NonGlobal(5), 5, 5, false, MiscRegs::default()); // This should replace the first entry
 
         // The first entry should be replaced, so the lookup should return None
         assert_eq!(
-            tlbset.lookup(1, AddressSpaceID::NonGlobal(1), 2, false),
+            tlbset.lookup(1, AddressSpaceID::NonGlobal(1), 2, false, &MiscRegs::default()),
             None
         );
     }
@@ -313,13 +355,13 @@ mod tests {
 
         // Insert 16 entries, causing multiple replacements
         for i in 0..16 {
-            tlb.insert(i, AddressSpaceID::NonGlobal(i as u16), i, i, false);
+            tlb.insert(i, AddressSpaceID::NonGlobal(i as u16), i, i, false, MiscRegs::default());
         }
 
         // The first 4 entries should have been replaced in each set, so their lookups should return None
         for i in 0..4 {
             assert_eq!(
-                tlb.lookup(i, AddressSpaceID::NonGlobal(i as u16), 100 + 1, false),
+                tlb.lookup(i, AddressSpaceID::NonGlobal(i as u16), 100 + 1, false, &MiscRegs::default()),
                 None
             );
         }
@@ -327,7 +369,7 @@ mod tests {
         // The last 4 entries in each set should still be in the TLB, so their lookups should return their values
         for i in 12..16 {
             assert_eq!(
-                tlb.lookup(i, AddressSpaceID::NonGlobal(i as u16), 200 + i, false),
+                tlb.lookup(i, AddressSpaceID::NonGlobal(i as u16), 200 + i, false, &MiscRegs::default()),
                 Some(i)
             );
         }
@@ -338,6 +380,7 @@ mod tests {
 pub struct FullyAssociativeTLBEntry {
     pub ts: u64,
     pub ppn: u64,
+    pub misc_regs: MiscRegs,
 }
 
 #[serde_as]
@@ -394,7 +437,7 @@ impl FullyAssociativeTLB {
     }
 
     #[inline]
-    pub fn lookup(&mut self, vpn: u64, asid: u16, ts: u64) -> Option<u64> {
+    pub fn lookup(&mut self, vpn: u64, asid: u16, ts: u64, misc_regs: &MiscRegs) -> Option<u64> {
         assert!(!self.deferred_elements_exist);
         let is_os = vpn >> 51 == 1;
 
@@ -405,16 +448,20 @@ impl FullyAssociativeTLB {
         };
 
         if let Some(entry) = self.elements.get_mut(&hash) {
-            entry.ts = ts;
-            return Some(entry.ppn);
+            if entry.misc_regs == *misc_regs {
+                entry.ts = ts;
+                return Some(entry.ppn);
+            }
         }
 
         if !is_os {
             // We try the global ASID
             let hash = Self::pack_hash(vpn, AddressSpaceID::Global);
             if let Some(entry) = self.elements.get_mut(&hash) {
-                entry.ts = ts;
-                return Some(entry.ppn);
+                if entry.misc_regs == *misc_regs {
+                    entry.ts = ts;
+                    return Some(entry.ppn);
+                }
             }
         }
 
@@ -423,26 +470,41 @@ impl FullyAssociativeTLB {
 
     // conservative insertion. It should be only used for testing.
     #[inline]
-    pub fn insert(&mut self, vpn: u64, asid: AddressSpaceID, ts: u64, ppn: u64) {
+    pub fn insert(
+        &mut self,
+        vpn: u64,
+        asid: AddressSpaceID,
+        ts: u64,
+        ppn: u64,
+        misc_regs: MiscRegs,
+    ) {
         assert!(!self.deferred_elements_exist);
         let hash = Self::pack_hash(vpn, asid);
         if let Some(entry) = self.elements.get_mut(&hash) {
             entry.ts = ts;
+            entry.misc_regs = misc_regs;
             return;
         }
 
         self.elements
-            .insert(hash, FullyAssociativeTLBEntry { ts, ppn });
+            .insert(hash, FullyAssociativeTLBEntry { ts, ppn, misc_regs });
 
         self.run_lru();
     }
 
     #[inline]
-    pub fn deferred_insert(&mut self, vpn: u64, asid: AddressSpaceID, ts: u64, ppn: u64) -> bool {
+    pub fn deferred_insert(
+        &mut self,
+        vpn: u64,
+        asid: AddressSpaceID,
+        ts: u64,
+        ppn: u64,
+        misc_regs: MiscRegs,
+    ) -> bool {
         let hash = Self::pack_hash(vpn, asid);
         if self
             .elements
-            .insert(hash, FullyAssociativeTLBEntry { ts, ppn })
+            .insert(hash, FullyAssociativeTLBEntry { ts, ppn, misc_regs })
             .is_none()
         {
             self.deferred_elements_exist = true;
@@ -519,56 +581,69 @@ mod fa_tlb_tests {
     #[test]
     fn test_fa_tlbset_insert_and_lookup() {
         let mut tlbset: FullyAssociativeTLB = FullyAssociativeTLB::new(4);
-        tlbset.insert(1, AddressSpaceID::NonGlobal(1), 1, 1);
-        assert_eq!(tlbset.lookup(1, 1, 2), Some(1));
+        tlbset.insert(1, AddressSpaceID::NonGlobal(1), 1, 1, MiscRegs::default());
+        assert_eq!(tlbset.lookup(1, 1, 2, &MiscRegs::default()), Some(1));
+    }
+
+    #[test]
+    fn test_fa_tlb_lookup_requires_matching_misc_regs() {
+        let mut tlbset: FullyAssociativeTLB = FullyAssociativeTLB::new(4);
+        let mut inserted_regs = MiscRegs::default();
+        inserted_regs.ttbr0_el1 = 0x1000;
+        let mut probed_regs = MiscRegs::default();
+        probed_regs.ttbr0_el1 = 0x2000;
+
+        tlbset.insert(1, AddressSpaceID::NonGlobal(1), 1, 1, inserted_regs);
+
+        assert_eq!(tlbset.lookup(1, 1, 2, &probed_regs), None);
     }
 
     #[test]
     fn test_fa_tlbset_replacement_policy() {
         let mut tlbset: FullyAssociativeTLB = FullyAssociativeTLB::new(4);
-        tlbset.insert(1, AddressSpaceID::NonGlobal(1), 1, 1);
-        tlbset.insert(2, AddressSpaceID::NonGlobal(2), 2, 2);
-        tlbset.insert(3, AddressSpaceID::NonGlobal(3), 3, 3);
-        tlbset.insert(4, AddressSpaceID::NonGlobal(4), 4, 4);
-        tlbset.insert(5, AddressSpaceID::NonGlobal(5), 5, 5); // This should replace the first entry
+        tlbset.insert(1, AddressSpaceID::NonGlobal(1), 1, 1, MiscRegs::default());
+        tlbset.insert(2, AddressSpaceID::NonGlobal(2), 2, 2, MiscRegs::default());
+        tlbset.insert(3, AddressSpaceID::NonGlobal(3), 3, 3, MiscRegs::default());
+        tlbset.insert(4, AddressSpaceID::NonGlobal(4), 4, 4, MiscRegs::default());
+        tlbset.insert(5, AddressSpaceID::NonGlobal(5), 5, 5, MiscRegs::default()); // This should replace the first entry
 
         // The first entry should be replaced, so the lookup should return None
-        assert_eq!(tlbset.lookup(1, 1, 2), None);
+        assert_eq!(tlbset.lookup(1, 1, 2, &MiscRegs::default()), None);
     }
 
     #[test]
     fn test_deferred_insertion() {
         let mut tlbset: FullyAssociativeTLB = FullyAssociativeTLB::new(4);
-        tlbset.deferred_insert(1, AddressSpaceID::NonGlobal(1), 1, 1);
-        tlbset.deferred_insert(2, AddressSpaceID::NonGlobal(2), 2, 2);
-        tlbset.deferred_insert(3, AddressSpaceID::NonGlobal(3), 3, 3);
-        tlbset.deferred_insert(4, AddressSpaceID::NonGlobal(4), 4, 4);
-        tlbset.deferred_insert(5, AddressSpaceID::NonGlobal(5), 5, 5);
+        tlbset.deferred_insert(1, AddressSpaceID::NonGlobal(1), 1, 1, MiscRegs::default());
+        tlbset.deferred_insert(2, AddressSpaceID::NonGlobal(2), 2, 2, MiscRegs::default());
+        tlbset.deferred_insert(3, AddressSpaceID::NonGlobal(3), 3, 3, MiscRegs::default());
+        tlbset.deferred_insert(4, AddressSpaceID::NonGlobal(4), 4, 4, MiscRegs::default());
+        tlbset.deferred_insert(5, AddressSpaceID::NonGlobal(5), 5, 5, MiscRegs::default());
 
         tlbset.run_lru();
 
-        assert_eq!(tlbset.lookup(1, 1, 2), None);
+        assert_eq!(tlbset.lookup(1, 1, 2, &MiscRegs::default()), None);
 
-        assert_eq!(tlbset.lookup(2, 2, 2), Some(2));
+        assert_eq!(tlbset.lookup(2, 2, 2, &MiscRegs::default()), Some(2));
     }
 
     #[test]
     fn test_fa_tlb_lru_promotion() {
         let mut tlbset: FullyAssociativeTLB = FullyAssociativeTLB::new(4);
 
-        tlbset.insert(1, AddressSpaceID::NonGlobal(1), 1, 1);
-        tlbset.insert(2, AddressSpaceID::NonGlobal(2), 2, 2);
-        tlbset.insert(3, AddressSpaceID::NonGlobal(3), 3, 3);
-        tlbset.insert(4, AddressSpaceID::NonGlobal(4), 4, 4);
+        tlbset.insert(1, AddressSpaceID::NonGlobal(1), 1, 1, MiscRegs::default());
+        tlbset.insert(2, AddressSpaceID::NonGlobal(2), 2, 2, MiscRegs::default());
+        tlbset.insert(3, AddressSpaceID::NonGlobal(3), 3, 3, MiscRegs::default());
+        tlbset.insert(4, AddressSpaceID::NonGlobal(4), 4, 4, MiscRegs::default());
 
         // Access the first entry to promote it to the MRU position
-        tlbset.lookup(1, 1, 5);
+        tlbset.lookup(1, 1, 5, &MiscRegs::default());
 
         // Insert a new entry, causing the first entry to be replaced
-        tlbset.insert(5, AddressSpaceID::NonGlobal(5), 6, 5);
+        tlbset.insert(5, AddressSpaceID::NonGlobal(5), 6, 5, MiscRegs::default());
 
         // The second entry should have been replaced, so the lookup should return None
-        assert_eq!(tlbset.lookup(2, 2, 2), None);
+        assert_eq!(tlbset.lookup(2, 2, 2, &MiscRegs::default()), None);
     }
 
     #[test]
@@ -591,15 +666,15 @@ mod fa_tlb_tests {
     fn test_fa_tlb_hit_insertion() {
         let mut tlbset = FullyAssociativeTLB::new(4);
 
-        tlbset.insert(1, AddressSpaceID::NonGlobal(1), 1, 1);
-        tlbset.insert(2, AddressSpaceID::NonGlobal(2), 2, 2);
-        tlbset.insert(3, AddressSpaceID::NonGlobal(3), 3, 3);
-        tlbset.insert(4, AddressSpaceID::NonGlobal(4), 4, 4);
+        tlbset.insert(1, AddressSpaceID::NonGlobal(1), 1, 1, MiscRegs::default());
+        tlbset.insert(2, AddressSpaceID::NonGlobal(2), 2, 2, MiscRegs::default());
+        tlbset.insert(3, AddressSpaceID::NonGlobal(3), 3, 3, MiscRegs::default());
+        tlbset.insert(4, AddressSpaceID::NonGlobal(4), 4, 4, MiscRegs::default());
 
         // Insert an existing entry.
-        tlbset.insert(2, AddressSpaceID::NonGlobal(2), 5, 5);
+        tlbset.insert(2, AddressSpaceID::NonGlobal(2), 5, 5, MiscRegs::default());
 
         // Is vpn 1 still a hit?
-        assert_eq!(tlbset.lookup(1, 1, 6), Some(1));
+        assert_eq!(tlbset.lookup(1, 1, 6, &MiscRegs::default()), Some(1));
     }
 }

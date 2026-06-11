@@ -841,6 +841,18 @@ unsafe extern "C" {
     pub fn qemu_plugin_read_tcr_el1() -> u64;
 }
 unsafe extern "C" {
+    #[doc = " qemu_plugin_read_sctlr_el1 - returns the value of sctlr_el1.\n\n This function can be only called from threads that run a vCPU. Otherwise, it\n will trigger assertion failure."]
+    pub fn qemu_plugin_read_sctlr_el1() -> u64;
+}
+unsafe extern "C" {
+    #[doc = " qemu_plugin_read_cpsr - returns the value of CPSR.\n\n This function can be only called from threads that run a vCPU. Otherwise, it\n will trigger assertion failure."]
+    pub fn qemu_plugin_read_cpsr() -> u64;
+}
+unsafe extern "C" {
+    #[doc = " qemu_plugin_read_mair_el1 - returns the value of mair_el1.\n\n This function can be only called from threads that run a vCPU. Otherwise, it\n will trigger assertion failure."]
+    pub fn qemu_plugin_read_mair_el1() -> u64;
+}
+unsafe extern "C" {
     #[doc = " qemu_plugin_hwaddr_translate_walk_trace - returns the trace of walking the\n page table to get the specific translation.\n\n The returned array has 4 elements. Every element is the hardware address of a\n specific page table entry. For huge pages or translation error, you will see\n -1 in the array ahead of time.\n\n This function can be only called from threads that run a vCPU. Otherwise, it\n will return NULL.\n\n The function reads the recorded trace in the TLB entry. There is a better way\n to optimize the storage.\n"]
     pub fn qemu_plugin_hwaddr_translate_walk_trace(hwaddr: *const qemu_plugin_hwaddr)
     -> *const u64;
@@ -899,10 +911,11 @@ pub const qemu_plugin_snapshot_format_t_QEMU_PLUGIN_SNAPSHOT_FORMAT_EXTERNAL_INC
     qemu_plugin_snapshot_format_t = 5;
 pub type qemu_plugin_snapshot_format_t = ::std::os::raw::c_uint;
 unsafe extern "C" {
-    #[doc = " qemu_plugin_savevm - save the VM state.\n @name: the name of the snapshot.\n @use_xdelta: whether to use xdelta to save the snapshot.\n @xdelta_source_name: the name of the source snapshot when using xdelta. Can be null for other cases.\n\n This function is a wrapper of the QEMU function `save_snapshot`.\n It prints the error directly to the console."]
+    #[doc = " qemu_plugin_savevm - save the VM state.\n @name: the name of the snapshot.\n @format: the snapshot format to use.\n @generate_gem5_chkpt: whether to generate gem5-compatible checkpoint files.\n\n This function is a wrapper of the QEMU function `save_snapshot`.\n It prints the error directly to the console."]
     pub fn qemu_plugin_savevm(
         name: *const ::std::os::raw::c_char,
         format: qemu_plugin_snapshot_format_t,
+        generate_gem5_chkpt: bool,
     );
 }
 pub type qemu_plugin_event_loop_poll_cb_t = ::std::option::Option<unsafe extern "C" fn()>;
