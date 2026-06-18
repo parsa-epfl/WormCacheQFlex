@@ -1,8 +1,12 @@
-use std::sync::OnceLock;
+use std::sync::{
+    OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
 
 use crate::{parameter, qemu_api};
 use spin::mutex::SpinMutex;
 
+static PURE_FILL_CHECKPOINT_CREATED: AtomicBool = AtomicBool::new(false);
 static SNAPSHOT_INFO: SpinMutex<Option<(String, u64)>> = SpinMutex::new(None);
 
 unsafe extern "C" fn event_loop_callback() {
@@ -18,18 +22,20 @@ unsafe extern "C" fn event_loop_callback() {
             return;
         }
 
-        let snapshot_info = snapshot_info_guard.take().unwrap();
+        let _ = snapshot_info_guard.take().unwrap();
 
-        println!("Snapshot request: {}", &snapshot_info.0);
+        // println!("Snapshot request: {}", &snapshot_info.0);
 
-        let c_snapshot_name = std::ffi::CString::new(snapshot_info.0.clone()).unwrap();
+        // let c_snapshot_name = std::ffi::CString::new(snapshot_info.0.clone()).unwrap();
 
-        qemu_api::qemu_plugin_savevm(
-            c_snapshot_name.as_ptr(),
-            qemu_api::qemu_plugin_snapshot_format_t_QEMU_PLUGIN_SNAPSHOT_FORMAT_EXTERNAL_INCREMENTAL_BASE,
-        );
+        // qemu_api::qemu_plugin_savevm(
+        //     c_snapshot_name.as_ptr(),
+        //     qemu_api::qemu_plugin_snapshot_format_t_QEMU_PLUGIN_SNAPSHOT_FORMAT_EXTERNAL_INCREMENTAL_BASE,
+        // );
+        //
+        qemu_api::qemu_plugin_notify_fully_warmed();
 
-        std::process::exit(0);
+        PURE_FILL_CHECKPOINT_CREATED.store(true, Ordering::SeqCst);
     }
 }
 
@@ -37,10 +43,22 @@ static SNAPSHOT_NAME: OnceLock<String> = OnceLock::new();
 static WARM_RATIO: OnceLock<f64> = OnceLock::new();
 
 unsafe extern "C" fn quantum_checking_callback(_: u64) -> bool {
-    let warmed_set = unsafe { (*super::PLUGIN).get_scache_warmed_set_count() };
-    let warm_ratio = *WARM_RATIO.get().unwrap();
+    if PURE_FILL_CHECKPOINT_CREATED.load(std::sync::atomic::Ordering::SeqCst) {
+        return false;
+    }
 
-    if warmed_set >= (parameter::SHARED_CACHE_SET as f64 * warm_ratio) as usize {
+    let warm_ratio = *WARM_RATIO.get().unwrap();
+    // An all-phantom node (REAL_CORE_COUNT == 0) warms nothing, so the shared cache never fills and
+    // the warmed-set count stays 0 — treat it as fully warmed immediately so it signals "ready to
+    // checkpoint" right away instead of hanging the master forever waiting for CTRL_CKP_INIT.
+    let warmed = if parameter::REAL_CORE_COUNT == 0 {
+        true
+    } else {
+        let warmed_set = unsafe { (*super::PLUGIN).get_scache_warmed_set_count() };
+        warmed_set >= (parameter::SHARED_CACHE_SET as f64 * warm_ratio) as usize
+    };
+
+    if warmed {
         let snapshot_info = (SNAPSHOT_NAME.get().unwrap().clone(), 0);
 
         let snapshot_info_guard = SNAPSHOT_INFO.try_lock();

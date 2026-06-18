@@ -141,7 +141,12 @@ unsafe extern "C" fn event_loop_callback() {
             }
             miss_file.flush().unwrap();
             drop(miss_file);
-            std::process::exit(0);
+
+            // Single-node: exit(0)s inside (every snapshot already on disk). Multi-node: the final
+            // snapshot above only ARMED the checkpoint; PDES writes it at the next quantum boundary
+            // and then drives the coordinated exit, so this returns and we must NOT exit here (that
+            // premature exit dropped the last snapshot — the 999-vs-1000 bug).
+            qemu_api::qemu_plugin_pdes_fw_complete();
         }
     }
 }

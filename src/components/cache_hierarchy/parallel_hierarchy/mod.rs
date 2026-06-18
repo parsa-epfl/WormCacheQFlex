@@ -77,7 +77,7 @@ unsafe extern "C" fn vcpu_mem_access(
 
             let ts = get_ts();
 
-            if parameter::MEASURE_HALF_OF_CORES && vcpu_idx >= parameter::CORE_COUNT as u32 / 2 {
+            if vcpu_idx >= parameter::REAL_CORE_COUNT as u32 {
                 return;
             } else {
                 (*PLUGIN).access_memory_with_va_and_pa(
@@ -117,7 +117,7 @@ unsafe extern "C" fn vcpu_insn_exec(
 
         let ts = get_ts();
 
-        if parameter::MEASURE_HALF_OF_CORES && vcpu_idx >= parameter::CORE_COUNT as u32 / 2 {
+        if vcpu_idx >= parameter::REAL_CORE_COUNT as u32 {
             return;
         } else {
             (*PLUGIN).access_memory_with_va(
@@ -160,7 +160,7 @@ unsafe extern "C" fn vcpu_invalid_tlb(
             unreachable!()
         };
 
-        if parameter::MEASURE_HALF_OF_CORES && vcpu_idx >= parameter::CORE_COUNT as u32 / 2 {
+        if vcpu_idx >= parameter::REAL_CORE_COUNT as u32 {
             // (*DUMMY_PLUGIN).flush_mmu(vcpu_idx - parameter::CORE_COUNT as u32 / 2, info);
         } else {
             (*PLUGIN).flush_mmu(vcpu_idx, info);
@@ -308,7 +308,7 @@ impl super::super::Plugin for ParallelCacheHierarchyPlugin {
     fn serialize(name: &str) {
         unsafe {
             (*PLUGIN).serialize(name, 0);
-            // if parameter::MEASURE_HALF_OF_CORES {
+            // if parameter::REAL_CORE_COUNT < parameter::CORE_COUNT {
             // (*DUMMY_PLUGIN).serialize(name, 1);
             // }
         }
@@ -317,7 +317,7 @@ impl super::super::Plugin for ParallelCacheHierarchyPlugin {
     fn deserialize(name: &str) {
         unsafe {
             (*PLUGIN).deserialize(name, 0);
-            // if parameter::MEASURE_HALF_OF_CORES {
+            // if parameter::REAL_CORE_COUNT < parameter::CORE_COUNT {
             // (*DUMMY_PLUGIN).deserialize(name, 1);
             // }
         }

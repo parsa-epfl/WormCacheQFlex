@@ -107,17 +107,13 @@ impl BranchResolutionResult {
     }
 }
 
-const ALLOCATED_CORE: usize = if parameter::MEASURE_HALF_OF_CORES {
-    parameter::CORE_COUNT / 2
-} else {
-    parameter::CORE_COUNT
-};
+const ALLOCATED_CORE: usize = parameter::REAL_CORE_COUNT;
 
 static mut FETCH_UNIT: *mut fetch::FetchUnit<{ ALLOCATED_CORE }> = std::ptr::null_mut();
 
 unsafe extern "C" fn branch_resolved_cb(vcpu_index: u32, pc: u64, target: u64, flags: u32) {
     unsafe {
-        if parameter::MEASURE_HALF_OF_CORES && vcpu_index >= parameter::CORE_COUNT as u32 / 2 {
+        if vcpu_index >= parameter::REAL_CORE_COUNT as u32 {
             return;
         }
 

@@ -80,11 +80,7 @@ use super::{
     hierarchy,
 };
 
-pub const ALLOCATED_CORE_COUNT: usize = if parameter::MEASURE_HALF_OF_CORES {
-    parameter::CORE_COUNT / 2
-} else {
-    parameter::CORE_COUNT
-};
+pub const ALLOCATED_CORE_COUNT: usize = parameter::REAL_CORE_COUNT;
 
 impl MMUParser<true> for DummyParser {
     type Output = mmu::FullyAssociativeL1MMU<
