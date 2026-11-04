@@ -247,6 +247,23 @@ impl<
         serde_json::to_writer(&mut file, &serde_json::Value::Array(multiple_mmus)).unwrap();
 
         file.finish().unwrap();
+
+        if parameter::GEM5_COMPATIBILITY {
+            // The name must not contain "mmu": checkpoint_conversion expects exactly one *mmu*.json.zstd file.
+            let file =
+                std::fs::File::create(format!("{}/gem5-tlbs-{}.json.zstd", name, numa_node_id)).unwrap();
+            let mut file = Encoder::new(file, 0).unwrap();
+
+            let gem5_tlbs = self
+                .mmus
+                .iter()
+                .map(|x| unsafe { (*x.get()).serialize_gem5_tlbs() })
+                .collect::<Vec<_>>();
+
+            serde_json::to_writer(&mut file, &serde_json::Value::Array(gem5_tlbs)).unwrap();
+
+            file.finish().unwrap();
+        }
     }
 
     fn deserialize_mmus(&self, name: &str, numa_node_id: usize) {

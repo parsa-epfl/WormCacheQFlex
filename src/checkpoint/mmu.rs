@@ -305,7 +305,6 @@ fn load_tlb_json(value: serde_json::Value, is_instruction: bool) -> SerializedTL
                     ts: entry.ts,
                     valid: true,
                     is_instruction,
-                    misc_regs: Default::default(),
                 }
             }).collect();
 

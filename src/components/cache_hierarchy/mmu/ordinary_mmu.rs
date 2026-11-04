@@ -1,12 +1,12 @@
 use rustc_hash::FxHashMap as HashMap;
 use serde::{Deserialize, Serialize};
 
-use crate::arch::MiscRegs;
 use crate::debug::statistics::{EventType, Statistics};
 use crate::{arch, parameter};
 
 use super::{
     AbstractMMU, MMUFlushMode, MMUTranslationResult,
+    gem5_tlb::Gem5L1TLBs,
     tlb::{self, AddressSpaceID, TLB},
 };
 
@@ -28,6 +28,9 @@ pub struct OrdinaryMMU<
     stlb: TLB<S_T_SETS, S_T_ASSO>,
     htbl_2mb: HashMap<u64, (AddressSpaceID, u64)>, // Currently, we just use a simple hashmap to store the 2MB page table.
     htlb_1gb: HashMap<u64, (AddressSpaceID, u64)>, // Same to the 2MB page table.
+    // Written to its own file (gem5-tlbs-N.json.zstd), not to mmus-N.json.
+    #[serde(skip)]
+    gem5_tlbs: Gem5L1TLBs<I_T_ASSO, D_T_ASSO>,
     arch: std::marker::PhantomData<ARCH>,
     // other MMU caches can be also added here as well.
 }
@@ -51,18 +54,17 @@ impl<
         ppn: u64,
         ts: u64,
         is_instruction: bool,
-        misc_regs: MiscRegs,
     ) {
         if parameter::L1TLB_ENABLED {
             if is_instruction {
-                self.itlb.insert(vpn, asid, ppn, ts, is_instruction, misc_regs.clone());
+                self.itlb.insert(vpn, asid, ppn, ts, is_instruction);
             } else {
-                self.dtlb.insert(vpn, asid, ppn, ts, is_instruction, misc_regs.clone());
+                self.dtlb.insert(vpn, asid, ppn, ts, is_instruction);
             }
         }
 
         if S_ENABLED {
-            self.stlb.insert(vpn, asid, ppn, ts, is_instruction, misc_regs);
+            self.stlb.insert(vpn, asid, ppn, ts, is_instruction);
         }
     }
 }
@@ -81,17 +83,26 @@ impl<
     for OrdinaryMMU<ARCH, I_T_A, I_T_S, D_T_A, D_T_S, S_ENABLED, S_T_A, S_T_S, NO_HUGE_PAGE>
 {
     fn new() -> Self {
+        if parameter::GEM5_COMPATIBILITY {
+            assert!(I_T_S == 1 && D_T_S == 1, "The gem5 L1 TLB model is fully associative.");
+        }
+
         Self {
             itlb: TLB::new(),
             dtlb: TLB::new(),
             stlb: TLB::new(),
             htbl_2mb: HashMap::default(),
             htlb_1gb: HashMap::default(),
+            gem5_tlbs: Gem5L1TLBs::default(),
             arch: std::marker::PhantomData,
         }
     }
 
     fn flush(&mut self, mode: MMUFlushMode) {
+        if parameter::GEM5_COMPATIBILITY {
+            self.gem5_tlbs.flush(mode);
+        }
+
         // Huge TLB currently are just blindly flushed.
         if !NO_HUGE_PAGE {
             self.htbl_2mb.clear();
@@ -116,10 +127,13 @@ impl<
         ts: u64,
         is_instruction: bool,
     ) -> MMUTranslationResult {
+        if parameter::GEM5_COMPATIBILITY {
+            self.gem5_tlbs.access::<ARCH>(va, ts, is_instruction);
+        }
+
         // First, we try 4KB page.
         let vpn = va >> 12;
         let asid = tlb::AddressSpaceID::NonGlobal(ARCH::get_asid()); // We will start with a non-global ASID. It can still match the global ASID.
-        let misc_regs = ARCH::get_misc_regs();
 
         let is_kernel = (vpn >> 51) == 1;
 
@@ -134,7 +148,7 @@ impl<
         if parameter::L1TLB_ENABLED {
             // First, check the L1 TLB.
             if is_instruction {
-                if let Some(ppn) = self.itlb.lookup(vpn, asid, ts, is_instruction, &misc_regs) {
+                if let Some(ppn) = self.itlb.lookup(vpn, asid, ts, is_instruction) {
                     let pa = ppn << 12 | (va & 0xfff);
 
                     if parameter::COMPARE_TRANSLATION_RESULT_WITH_WALKER {
@@ -143,7 +157,7 @@ impl<
 
                     return MMUTranslationResult::Hit(pa, 1);
                 }
-            } else if let Some(ppn) = self.dtlb.lookup(vpn, asid, ts, is_instruction, &misc_regs) {
+            } else if let Some(ppn) = self.dtlb.lookup(vpn, asid, ts, is_instruction) {
                 let pa = ppn << 12 | (va & 0xfff);
 
                 if parameter::COMPARE_TRANSLATION_RESULT_WITH_WALKER {
@@ -156,7 +170,7 @@ impl<
 
         if S_ENABLED {
             // Then, we try L2 TLB.
-            if let Some(ppn) = self.stlb.lookup(vpn, asid, ts, is_instruction, &misc_regs) {
+            if let Some(ppn) = self.stlb.lookup(vpn, asid, ts, is_instruction) {
                 let pa = ppn << 12 | (va & 0xfff);
 
                 if parameter::COMPARE_TRANSLATION_RESULT_WITH_WALKER {
@@ -166,9 +180,9 @@ impl<
                 if parameter::L1TLB_ENABLED {
                     // Insert the result into L1 TLB.
                     if is_instruction {
-                        self.itlb.insert(vpn, asid, ppn, ts, is_instruction, misc_regs.clone());
+                        self.itlb.insert(vpn, asid, ppn, ts, is_instruction);
                     } else {
-                        self.dtlb.insert(vpn, asid, ppn, ts, is_instruction, misc_regs.clone());
+                        self.dtlb.insert(vpn, asid, ppn, ts, is_instruction);
                     }
                 }
 
@@ -260,7 +274,7 @@ impl<
             // based on the ptw_result, we refill each TLB correspondingly.
             match ptw_result.page_size {
                 arch::PageSize::_4KB => {
-                    self.refill_4k_tlb(vpn, asid, ptw_result.paddr >> 12, ts, is_instruction, misc_regs.clone());
+                    self.refill_4k_tlb(vpn, asid, ptw_result.paddr >> 12, ts, is_instruction);
                 }
                 arch::PageSize::_2MB => {
                     self.htbl_2mb
@@ -299,7 +313,7 @@ impl<
             }
 
             // based on the ptw_result, we refill each TLB correspondingly.
-            self.refill_4k_tlb(vpn, asid, ptw_result.paddr >> 12, ts, is_instruction, misc_regs);
+            self.refill_4k_tlb(vpn, asid, ptw_result.paddr >> 12, ts, is_instruction);
 
             if ptw_result.cacheable {
                 MMUTranslationResult::Miss(ptw_result.paddr, ptw_result.traces)
@@ -311,13 +325,16 @@ impl<
 
     fn lookup(&mut self, vpn: u64, ts: u64, is_instruction: bool) -> Option<u64> {
         let asid = tlb::AddressSpaceID::NonGlobal(ARCH::get_asid());
-        let misc_regs = ARCH::get_misc_regs();
 
-        self.stlb.lookup(vpn, asid, ts, is_instruction, &misc_regs)
+        self.stlb.lookup(vpn, asid, ts, is_instruction)
     }
 
     fn serialize(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap()
+    }
+
+    fn serialize_gem5_tlbs(&self) -> serde_json::Value {
+        serde_json::to_value(&self.gem5_tlbs).unwrap()
     }
 
     fn deserialize(&mut self, value: serde_json::Value) {

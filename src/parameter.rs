@@ -110,6 +110,9 @@ static_assertions::const_assert!(STLB_SET.is_power_of_two());
 // No huge pages?
 pub const NO_HUGE_PAGE: bool = true;
 
+// Emits .gem bundle at each fw snapshot (containing information needed for gem5: registers, devices, TLB)
+pub const GEM5_COMPATIBILITY: bool = false;
+
 pub const COMPARE_TRANSLATION_RESULT_WITH_WALKER: bool = false;
 
 /**

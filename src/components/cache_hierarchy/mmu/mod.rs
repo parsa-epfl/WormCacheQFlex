@@ -32,6 +32,7 @@
 // Desc: Memory Management Unit
 // This file is highly related to the ISA.
 
+pub mod gem5_tlb;
 pub mod l1_fully_associative;
 pub mod no_mmu;
 pub mod ordinary_mmu;
@@ -72,6 +73,10 @@ pub trait AbstractMMU {
 
     fn serialize(&self) -> serde_json::Value;
     fn deserialize(&mut self, value: serde_json::Value);
+
+    fn serialize_gem5_tlbs(&self) -> serde_json::Value {
+        serde_json::Value::Null
+    }
 }
 
 pub use l1_fully_associative::FullyAssociativeL1MMU;
