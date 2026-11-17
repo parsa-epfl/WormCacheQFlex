@@ -84,14 +84,27 @@ impl<const ENTRIES: usize> Gem5L1TLB<ENTRIES> {
         &mut self.entries[0].entries
     }
 
+    /// The valid entries, in no particular order (recency is in `ts`).
+    pub fn entries(&self) -> &[Gem5TLBEntry] {
+        &self.entries[0].entries
+    }
+
+    // gem5 scans from its most recent entry and stops at the first match, so
+    // when two entries cover the address (e.g. a global and a non-global
+    // one), the most recent one wins. Do the same.
     fn lookup(&mut self, va: u64, asid: AddressSpaceID, ts: u64) -> bool {
-        for entry in self.set().iter_mut() {
-            if entry.covers(va) && entry.asid.check(&asid) {
+        let hit = self
+            .set()
+            .iter_mut()
+            .filter(|e| e.covers(va) && e.asid.check(&asid))
+            .max_by_key(|e| e.ts);
+        match hit {
+            Some(entry) => {
                 entry.ts = ts;
-                return true;
+                true
             }
+            None => false,
         }
-        false
     }
 
     fn insert(&mut self, entry: Gem5TLBEntry) {
@@ -133,7 +146,7 @@ impl<const ENTRIES: usize> Gem5L1TLB<ENTRIES> {
         });
     }
 
-    fn flush(&mut self, mode: MMUFlushMode) {
+    pub fn flush(&mut self, mode: MMUFlushMode) {
         let set = self.set();
         match mode {
             MMUFlushMode::All => set.clear(),
@@ -141,8 +154,10 @@ impl<const ENTRIES: usize> Gem5L1TLB<ENTRIES> {
             MMUFlushMode::ByVPN(vpn, page_count) => {
                 set.retain(|e| !e.covers_any_4k_page(vpn, page_count))
             }
+            // As in ARM (TLBI VAE1) and gem5: global entries for the page are
+            // removed too, so match the ASID the way a lookup does.
             MMUFlushMode::ByVPNAndASID(vpn, page_count, asid) => {
-                set.retain(|e| !(e.asid == asid && e.covers_any_4k_page(vpn, page_count)))
+                set.retain(|e| !(e.asid.check(&asid) && e.covers_any_4k_page(vpn, page_count)))
             }
         }
     }
@@ -150,8 +165,8 @@ impl<const ENTRIES: usize> Gem5L1TLB<ENTRIES> {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Gem5L1TLBs<const I: usize, const D: usize> {
-    itlb: Gem5L1TLB<I>,
-    dtlb: Gem5L1TLB<D>,
+    pub itlb: Gem5L1TLB<I>,
+    pub dtlb: Gem5L1TLB<D>,
 }
 
 impl<const I: usize, const D: usize> Gem5L1TLBs<I, D> {
@@ -235,5 +250,48 @@ mod tests {
         tlb.access::<HugePageISA>(0x0040_0000, 4);
         let vpns: Vec<u64> = tlb.set().iter().map(|e| e.vpn).collect();
         assert!(vpns.contains(&0) && vpns.contains(&2) && !vpns.contains(&1));
+    }
+
+    fn entry(vpn: u64, asid: AddressSpaceID, ts: u64) -> Gem5TLBEntry {
+        Gem5TLBEntry {
+            valid: true,
+            ts,
+            asid,
+            vpn,
+            ppn: vpn,
+            n: 12,
+            misc_regs: MiscRegs::default(),
+        }
+    }
+
+    #[test]
+    fn flush_by_va_and_asid_removes_global_entry() {
+        let mut tlb: Gem5L1TLB<64> = Gem5L1TLB::default();
+        tlb.insert(entry(0x10, AddressSpaceID::Global, 1));
+        tlb.insert(entry(0x10, AddressSpaceID::NonGlobal(7), 2));
+        tlb.insert(entry(0x10, AddressSpaceID::NonGlobal(8), 3));
+        tlb.flush(MMUFlushMode::ByVPNAndASID(0x10, 1, AddressSpaceID::NonGlobal(7)));
+        let left: Vec<AddressSpaceID> = tlb.set().iter().map(|e| e.asid).collect();
+        assert_eq!(left, vec![AddressSpaceID::NonGlobal(8)]);
+    }
+
+    #[test]
+    fn flush_by_asid_keeps_global_entry() {
+        let mut tlb: Gem5L1TLB<64> = Gem5L1TLB::default();
+        tlb.insert(entry(0x10, AddressSpaceID::Global, 1));
+        tlb.insert(entry(0x20, AddressSpaceID::NonGlobal(7), 2));
+        tlb.flush(MMUFlushMode::ByASID(AddressSpaceID::NonGlobal(7)));
+        let left: Vec<AddressSpaceID> = tlb.set().iter().map(|e| e.asid).collect();
+        assert_eq!(left, vec![AddressSpaceID::Global]);
+    }
+
+    #[test]
+    fn lookup_updates_most_recent_matching_entry() {
+        let mut tlb: Gem5L1TLB<64> = Gem5L1TLB::default();
+        tlb.insert(entry(0x10, AddressSpaceID::Global, 5));
+        tlb.insert(entry(0x10, AddressSpaceID::NonGlobal(7), 1));
+        assert!(tlb.lookup(0x10 << 12, AddressSpaceID::NonGlobal(7), 9));
+        let ts: Vec<u64> = tlb.set().iter().map(|e| e.ts).collect();
+        assert_eq!(ts, vec![9, 1]);
     }
 }
