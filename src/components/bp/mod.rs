@@ -122,40 +122,58 @@ static TAGE_DECISION_TRACE_LIMIT: OnceLock<Option<usize>> = OnceLock::new();
 static BRANCH_LOGS: OnceLock<Vec<Mutex<LineWriter<File>>>> = OnceLock::new();
 static COLLECT_GEM5_BBL_BTB: OnceLock<bool> = OnceLock::new();
 
+// Basic-block tracking for the gem5 BBL-BTB export (`collect_gem5_bbl_btb`).
+// A basic block ends at every branch, taken or not, and a new one also starts
+// after any jump that QEMU does not report as a branch (interrupt, exception,
+// ERET). QEMU's AArch64 translator ends a translation block (TB) at every branch.
 #[derive(Default, Debug, Clone, Copy)]
 struct CoreBbState {
+    // Start of the basic block being executed.
     current_bb_start: Option<u64>,
-    prev_pc: Option<u64>,
-    next_pc_starts_new_bb: bool,
+    // Where the next TB should start: the end of the last TB, or the target
+    // of the last branch. If the next TB starts at the end of last TB, the current 
+    // basic block continues; anywhere else, a new basic block starts.
+    expected_next_tb_pc: Option<u64>,
+}
+
+impl CoreBbState {
+    // A TB of `n_insns` instructions starts executing at `tb_start`.
+    fn on_tb_start(&mut self, tb_start: u64, n_insns: u64) {
+        if self.expected_next_tb_pc != Some(tb_start) {
+            self.current_bb_start = Some(tb_start);
+        }
+        self.expected_next_tb_pc = Some(tb_start + 4 * n_insns);
+    }
+
+    // Returns the size of the basic block it ends, in bytes,
+    fn on_branch(&mut self, pc: u64, next_pc: u64) -> u64 {
+        let bbl_bytes = self
+            .current_bb_start
+            .map_or(0, |bb_start| pc.saturating_sub(bb_start));
+        self.current_bb_start = Some(next_pc);
+        self.expected_next_tb_pc = Some(next_pc);
+        bbl_bytes
+    }
 }
 
 static BB_STATES: OnceLock<Vec<Mutex<CoreBbState>>> = OnceLock::new();
 
-unsafe extern "C" fn vcpu_insn_exec(vcpu_idx: u32, inst_virtual_addr: *mut ffi::c_void) {
-    if !*COLLECT_GEM5_BBL_BTB.get().unwrap_or(&false) {
-        return;
-    }
+// Runs on the first instruction of every executed TB, when collection is on.
+// `userdata` packs the low 12 bits of the TB's start address and, above them,
+// its instruction count.
+unsafe extern "C" fn vcpu_tb_exec(vcpu_idx: u32, userdata: *mut ffi::c_void) {
     if parameter::MEASURE_HALF_OF_CORES && vcpu_idx >= parameter::CORE_COUNT as u32 / 2 {
         return;
     }
 
+    let userdata = userdata as u64;
     let pc_vpn = unsafe { qemu_api::qemu_plugin_read_pc_vpn() };
-    let pc = (pc_vpn << 12) | (inst_virtual_addr as u64 & 0xfff);
+    let tb_start = (pc_vpn << 12) | (userdata & 0xfff);
+    let n_insns = userdata >> 12;
 
-    if let Some(states) = BB_STATES.get() {
-        if let Some(state) = states.get(vcpu_idx as usize) {
-            if let Ok(mut state) = state.lock() {
-                let starts_new_bb = state.current_bb_start.is_none()
-                    || state.next_pc_starts_new_bb
-                    || state.prev_pc.map_or(false, |prev_pc| prev_pc.saturating_add(4) != pc);
-
-                if starts_new_bb {
-                    state.current_bb_start = Some(pc);
-                    state.next_pc_starts_new_bb = false;
-                }
-
-                state.prev_pc = Some(pc);
-            }
+    if let Some(state) = BB_STATES.get().and_then(|states| states.get(vcpu_idx as usize)) {
+        if let Ok(mut state) = state.lock() {
+            state.on_tb_start(tb_start, n_insns);
         }
     }
 }
@@ -175,28 +193,13 @@ unsafe extern "C" fn branch_resolved_cb(vcpu_index: u32, pc: u64, target: u64, f
         }
 
         let result = BranchResolutionResult::from_u32(flags);
-        let collect_gem5_bbl_btb = *COLLECT_GEM5_BBL_BTB.get().unwrap_or(&false);
-        let bbl_bytes = if collect_gem5_bbl_btb {
-            BB_STATES
-                .get()
-                .and_then(|states| states.get(vcpu_index as usize))
-                .and_then(|state| state.lock().ok().map(|state| state.current_bb_start))
-                .flatten()
-                .map(|bb_start| pc.saturating_sub(bb_start))
-                .unwrap_or(0)
-        } else {
-            0
-        };
 
-        if collect_gem5_bbl_btb {
-            if let Some(states) = BB_STATES.get() {
-                if let Some(state) = states.get(vcpu_index as usize) {
-                    if let Ok(mut state) = state.lock() {
-                        state.next_pc_starts_new_bb = true;
-                    }
-                }
-            }
-        }
+        // calls on_branch to get bbl_bytes
+        let bbl_bytes = BB_STATES
+            .get()
+            .and_then(|states| states.get(vcpu_index as usize))
+            .and_then(|state| state.lock().ok().map(|mut state| state.on_branch(pc, target)))
+            .unwrap_or(0);
 
         (*FETCH_UNIT).train(vcpu_index as usize, pc, result, target, bbl_bytes)
     }
@@ -294,17 +297,18 @@ impl Plugin for BranchPredictorPlugin {
         }
 
         if *COLLECT_GEM5_BBL_BTB.get().unwrap_or(&false) {
-            for i in 0..instruction_count {
-                let insn = unsafe { qemu_api::qemu_plugin_tb_get_insn(tb, i) };
-                let insn_addr = unsafe { qemu_api::qemu_plugin_insn_vaddr(insn) };
-                unsafe {
-                    qemu_api::qemu_plugin_register_vcpu_insn_exec_cb(
-                        insn,
-                        Some(vcpu_insn_exec),
-                        qemu_api::qemu_plugin_cb_flags_QEMU_PLUGIN_CB_NO_REGS,
-                        insn_addr as *mut ffi::c_void,
-                    );
-                }
+            // One callback per TB, on its first instruction, like the
+            // instruction counter in debug/statistics.rs.
+            let first = unsafe { qemu_api::qemu_plugin_tb_get_insn(tb, 0) };
+            let first_addr = unsafe { qemu_api::qemu_plugin_insn_vaddr(first) };
+            let userdata = (first_addr & 0xfff) | ((instruction_count as u64) << 12);
+            unsafe {
+                qemu_api::qemu_plugin_register_vcpu_insn_exec_cb(
+                    first,
+                    Some(vcpu_tb_exec),
+                    qemu_api::qemu_plugin_cb_flags_QEMU_PLUGIN_CB_NO_REGS,
+                    userdata as *mut ffi::c_void,
+                );
             }
         }
     }
