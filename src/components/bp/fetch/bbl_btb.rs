@@ -30,6 +30,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use crate::components::bp::{BranchResolutionResult, BranchType};
+use super::log_btb_trace::{self, TracedBtb};
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -77,6 +78,7 @@ impl<const SET: usize, const ASSO: usize> BblBTB<SET, ASSO> {
         target: u64,
         bbl_bytes: u64,
     ) {
+        log_btb_trace::log_input(TracedBtb::BblBtb, pc, result, target);
         self.local_ts += 1;
 
         let bbl_start = pc.saturating_sub(bbl_bytes);

@@ -184,6 +184,9 @@ unsafe extern "C" fn branch_resolved_cb(vcpu_index: u32, pc: u64, target: u64, f
             return;
         }
 
+        // Logging branch trace seen by the BTB
+        fetch::log_btb_trace::set_current_core(vcpu_index as usize);
+
         if let Some(logs) = BRANCH_LOGS.get() {
             if let Some(log) = logs.get(vcpu_index as usize) {
                 if let Ok(mut log) = log.lock() {
@@ -235,6 +238,9 @@ fn reset_bb_states() {
 impl Plugin for BranchPredictorPlugin {
     fn init(_plugin_id: u64, options: &FxHashMap<String, String>) {
         println!("BranchPredictorPlugin initialized.");
+        
+        // Logging information for branch trace seen by BTB
+        fetch::log_btb_trace::init(options, ALLOCATED_CORE);
 
         // get the mode name.
         let mode = String::new();

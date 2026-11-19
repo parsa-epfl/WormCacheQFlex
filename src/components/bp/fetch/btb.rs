@@ -30,6 +30,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use crate::components::bp::{BranchResolutionResult, BranchType};
+use super::log_btb_trace::{self, TracedBtb};
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -81,6 +82,7 @@ impl<const SET: usize, const ASSO: usize> BTB<SET, ASSO> {
         result: BranchResolutionResult,
         target: u64,
     ) -> (BranchPredictorResult, BranchType) {
+        log_btb_trace::log_input(TracedBtb::PcBtb, pc, result, target);
         self.local_ts += 1;
 
         // This is the word-aligned PC, so the index is shifted by 2 to avoid wasting space.

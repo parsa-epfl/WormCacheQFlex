@@ -32,6 +32,7 @@
 mod bimodal;
 pub mod bbl_btb;
 pub mod btb;
+pub(crate) mod log_btb_trace;
 mod gshare;
 mod ras;
 pub mod tage;
